@@ -49,14 +49,9 @@ Each run writes `runs/<tag>/` containing:
 
 A batch also writes `summary.md` with the mean, spread and cost per run. That spread is the number that decides how many reps the keep/revert rule needs.
 
-Scoring adds about 2.5 minutes per run on 2 cores (five ANDES runs), and less on your Mac with more workers.
+Scoring adds about 2.5 minutes per run on 2 cores (five ANDES runs).
 
 ## What changed from Harness1.0
 
-The Harness1.0 agent submitted a δ law as Python and was scored by driving it open loop with the true inputs. v0 asks for a terminal model as JSON (the scorer's format), with no δ in the data, and scores it closed loop on a grid the agent never sees. The data now has three operating points, staged voltage-reference tests, ambient recordings and an operator log. The skeleton is device-generic and calls the device an inverter-based unit. The old skeleton's structural hints (droop on P after millisecond filters, extra PI action) are gone, as agreed on Oct 9.
+The Harness1.0 agent submitted a δ law as Python and was scored by driving it open loop with the true inputs. v0 asks for a terminal model as JSON (the scorer's format), with no δ in the data, and scores it closed loop on a grid the agent never sees. The data now has three operating points, staged voltage-reference tests, ambient recordings and an operator log. The skeleton is device-generic and calls the device an inverter-based unit. The old skeleton's structural hints (droop on P after millisecond filters, extra PI action) are gone.
 
-## What has and hasn't been checked
-
-I ran the runner end to end in the cloud with a stand-in for the API that submits the true model with an ideal current loop. The prompt, `system.md`, `method.md` and the diagram arrive as four blocks, the json block is extracted, and the scorer gives 0.0106 on grid B, as it should. I also ran the checker on a validation file: the ideal-loop model replays to near the noise, flat replays as flat, and the full 13-state truth diverges open loop, which is the known behaviour that `method.md` warns about.
-
-Not checked: the Docker sandbox (no Docker daemon in the cloud) and real API calls. The first real run is yours. Start with one Haiku-low run and read its transcript before launching a batch.
