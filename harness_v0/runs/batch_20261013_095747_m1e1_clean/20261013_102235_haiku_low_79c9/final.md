@@ -1,0 +1,46 @@
+The submission is in `submission.json`. It replays both validation recordings open-loop with P RMSE about 5e-4 to 8e-4 pu and Q RMSE about 9e-3 pu. A model that holds P and Q flat scores about 2.4e-2 and 2.8e-2, so the fit is well ahead of that baseline.
+
+**Structure (three states, seven parameters)**
+
+- **Active power (frequency droop):** P = P0 + Kpv·(V − V0) − Kp·ω, where ω = (θ − xw)/Tw and xw is a state that tracks θ with time constant Tw. ω is therefore a filtered bus-angle rate, which is the frequency proxy. Fitted values: Kp = 0.0451 pu per rad/s (about 17 pu per pu frequency, roughly a 6% droop), Kpv = −0.050, Tw = 0.104 s.
+- **Reactive power (voltage control):** Q = Q0 + qi + qf, with two states:
+  - qi′ = Ki·(Vset − V): integral action on the voltage error, Ki = 0.627.
+  - qf′ = (A·(Vset − V0) − B·(V − V0) − qf)/Tq: a fast lagged proportional path, with A = 1.765, B = −0.951, Tq = 0.038 s.
+- At t = 0 every state derivative is zero and P = P0, Q = Q0. The model uses no hard-coded setpoints.
+
+**Identification**
+
+- Kp and Tw are well determined. The gentrip and fault recordings carry the frequency excursion, and the P fit is close to the noise-free data.
+- Kpv is reasonably determined from the voltage steps.
+- Ki and Tq are identified from the setpoint-step overshoot and settling, though they trade off against A and B.
+- The Q-side split between the lagged proportional path and the integrator is weakly determined. A and B are correlated, and B is poorly constrained in sign on its own.
+- The steady-state dQ/dV from this model comes only from the lagged path and is positive (about +0.95 pu). The integrator contributes nothing at steady state. I could not confirm this against the real device; it may not match the scorer's droop check. Adding an explicit direct droop term (Kd) gave no improvement (fitted Kd = 0.37), so I left it out.
+- The P-side lag Tp fitted to its lower bound, so I removed it. The P response is effectively instantaneous apart from the washout.
+
+I rejected: a first-order Q lag with no integrator (gentrip Q error 0.08 pu), a voltage-filter-plus-lag structure (time constant ran to its bound and fit worse), and a pure PI without the lagged proportional path (setpoint-test Q error 0.04 pu). I did not run a closed-loop grid simulation beyond the open-loop replay check, so grid stability is unverified.
+
+```json
+{
+  "params": {
+    "A": 1.764680596871246,
+    "B": -0.9511035742017866,
+    "Ki": 0.6274970720706557,
+    "Tq": 0.038024969976697374,
+    "Kp": 0.045106303024205485,
+    "Tw": 0.10370655585118813,
+    "Kpv": -0.050241669570603775
+  },
+  "defs": {
+    "om": "(theta-xw)/Tw"
+  },
+  "states": {
+    "xw": {"rhs": "(theta-xw)/Tw", "init": "theta0"},
+    "qi": {"rhs": "Ki*(Vset-V)", "init": "0.0"},
+    "qf": {"rhs": "(A*(Vset-V0)-B*(V-V0)-qf)/Tq", "init": "0.0"}
+  },
+  "outputs": {
+    "P": "P0+Kpv*(V-V0)-Kp*om",
+    "Q": "Q0+qi+qf"
+  }
+}
+```
