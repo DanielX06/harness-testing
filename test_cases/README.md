@@ -1,13 +1,14 @@
-# Minimum test cases: grid A (training) and grid B (selection)
+# Test cases: grid A (training), grid B (selection) and grid M (hidden monitor)
 
-Grid A is what the agent learns from: Kundur's two-area system with the device in generator 3's slot, recorded the way an operator would have it. Grid B is the selection grid. It's the same machines re-arranged, the agent never sees it, and its score is the one that goes to `public.json` for the updater. The same device (REGF1 with the parameters from the medium Kundur case) sits in both. Test grids C, D and E and the hidden REGF1 monitor grid come later. The builder already takes any Kundur-family layout, and a different base network needs one more builder file.
+Grid A is what the agent learns from: Kundur's two-area system with the device in generator 3's slot, recorded the way an operator would have it. Grid B is the selection grid. It's the same machines re-arranged, the agent never sees it, and its score is the one that goes to `public.json` for the updater. Grid M is the hidden monitor for RSI runs: re-arranged another way, scored privately on every run, and never used to select anything, so it can show whether gains on B carry over to a grid nobody tuned on. The same device (REGF1 with the parameters from the medium Kundur case) sits in all three. Test grids C, D and E come later. The builder already takes any Kundur-family layout, and a different base network needs one more builder file.
 
 ```bash
 cd "Fall DRA/Harness_testing/test_cases"
 PY=../../.venv/bin/python
-$PY build_cases.py --workers 6      # both grids, deterministic; --grids A or --grids B for one
-$PY draw_grids.py                   # the two one-line diagrams
+$PY build_cases.py --workers 6      # all three grids, deterministic; --grids M (or A, B, or a list like B,M) for some
+$PY draw_grids.py                   # the one-line diagrams; draw_grids.py M draws only grid M's
 $PY make_clean_sandbox.py           # noise-free copy of grid A's sandbox_data, for a baseline
+$PY check_grid.py M                 # truth and deliberately wrong models scored on M -> monitor_check.json
 ```
 
 Every run is described in `grid_*/holdout/case.json` (operating point plus every event, including the ambient load sequence's seed). The scorer rebuilds runs from that file with `scorer/grids/kundur_family.py`, so a held-out run is replayed with exactly the events that produced its recording.
@@ -75,6 +76,45 @@ Score of deliberately wrong versions of the true device (composite; flat = 1, tr
 
 Droop and filter errors cost within about 15% of what they cost on Kundur, so B doesn't shrink the gaps the RSI accept rule needs. A voltage-loop gain error is clearly visible on B, though one of its three runs (the line trip) hits the cap. The full per-run numbers are in `selection_check.json`.
 
+## Grid M: the hidden monitor
+
+M is there so an RSI run can tell a real improvement from tuning to grid B. Nothing selects on it, and neither the agent nor the updater ever sees it. `../scorer/config_rsi.json` scores it privately on every run, next to grid A's held-out runs. If the B score keeps improving while M's stalls, the loop is fitting B. M's runs are the same three kinds as B's, in other places, directions and sizes, on a different arrangement at a similar strength, so a real improvement should show on both.
+
+| | grid A (op1) | grid B | grid M |
+|---|---|---|---|
+| 7-8 tie | 3 circuits | 2 circuits (Line_6 out) | 3 circuits |
+| other outage | none | none | one 5-6 circuit (Line_1) |
+| loads at buses 7 / 8 / 9 / 10 | 859 / 1425 / 0 / 150 MW | 900 / 1200 / 200 / 150 MW | 1000 / 1150 / 0 / 300 MW |
+| G2 / G4 | 400 / 700 MW | 400 / 700 MW | 500 / 650 MW |
+| device dispatch | 700 MW, schedule 1.00 pu | 720 MW, schedule 1.02 pu | 650 MW, schedule 1.01 pu |
+| least-damped mode with the true device | 0.59 Hz, ζ = 0.058 | 0.53 Hz, ζ = 0.079 | 0.92 Hz, ζ = 0.056 |
+
+Held-out runs, 25 s each, event at 2 s, one operating point:
+
+| run | event |
+|---|---|
+| M_vref | V_ref −1.5% at 2 s, back at 14 s |
+| M_load | the bus-10 load −40% (−120 MW) |
+| M_line | one 6-7 circuit opens |
+
+Three drafts failed before this one:
+
+* At 680 MW and a 0.99 pu schedule, the grid with the true device in it had a 0.93 Hz mode at a damping ratio of 0.009, and the voltage-reference run swung V between 0.84 and 1.15 pu. In an ANDES EIG scan, damping rose with the schedule and fell with dispatch, so M runs at 650 MW and 1.01 pu.
+* A −2.5% reference step pushed the operating point into a less damped region, and the 0.9 Hz swing barely decayed over 12 s. At −1.5% it rings about as much as B's own step back down at 14 s.
+* Opening a 9-10 circuit moved the device's P by an RMSE of only 0.0019 pu, under the scorer's 3σ floor of 0.003, so the flat model scored 0.97 instead of 1. The 6-7 circuit moves P and Q by 0.021 and 0.037 pu (B_line: 0.016 and 0.069). A 7-8 tie trip penalised the wrong models about the same but moved P by only 0.006.
+
+Score of deliberately wrong versions of the true device (composite; flat = 1, truth = 0):
+
+| error | grid B | grid M |
+|---|---|---|
+| ideal current loop | 0.011 | 0.015 |
+| wdrp × 0.8 | 0.120 | 0.142 |
+| Qdrp × 0.8 | 0.046 | 0.054 |
+| Tpm × 2 | 0.162 | 0.188 |
+| KPv × 0.7 | 0.53 (B_line at the cap) | 1.04 (M_vref and M_line at the cap, M_load's Q too) |
+
+On the P side, droop, filter and current-loop errors cost M almost exactly what they cost B, run for run. M's Q channel charges more for the same errors because M's Q swings are smaller (the TD divides by them), which puts the composite 15 to 25% higher. The one real difference is the voltage-loop gain. M's 0.9 Hz mode is less damped than B's (0.056 against B's 0.098 for its 0.89 Hz mode), so a 30% low KPv saturates two of M's runs where it saturates one of B's. Grid A's held-out runs saturate as well (1.13), so it is B that forgives this error, not M that is extreme. For a monitor that is useful: a B-tuned harness that drifts toward a wrong voltage-loop gain would pass B and show up on M. Per-run numbers are in `monitor_check.json` (`python check_grid.py M` regenerates it). How the 22 calibration runs score on M is in `../experiments/monitor_grid/results.md`.
+
 ## Limits worth knowing
 
 1. **Only voltage-reference steps.** REGF1 in ANDES has no active-power setpoint or frequency reference that acts during a run. `Pref` is used only at initialization, and a step on `Paux` feeds an integrator, so P runs away until the frequency limit. The P-setpoint and frequency-reference parts of MOD-026/027 testing can't be reproduced without editing the device model.
@@ -88,3 +128,4 @@ Droop and filter errors cost within about 15% of what they cost on Kundur, so B 
 * The generic builder rebuilds the old medium case's test_2 run to 5e-11 pu, so the new grids come from the same simulator setup.
 * No limiter binds in any run (Psig, Qsig and dw ranges are in each `answer_key.json`). Peak-to-peak SNR is at least 17 on every channel of every run (the lowest is P in A_amb_op1). The full table is in each answer key.
 * The true device, written as a submission, scores exactly 0 on grid B and on grid A's held-out runs, and flat scores exactly 1. That includes the voltage-reference runs, so the setpoint step reaches the submission the same way it reaches REGF1.
+* Grid M (Oct 17) was built in the cloud with ANDES at the same commit as the venv (eda5163). The same setup rebuilt grid B's three recordings byte for byte (identical SHA-256). On M the truth scores exactly 0 and flat exactly 1, no limiter binds (Qsig peaks at 2.61 against a limit of 9 on the system base), and peak-to-peak SNR is at least 22 (P in M_vref).

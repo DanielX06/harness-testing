@@ -3,6 +3,7 @@
     python run_harness.py 1 1                  # Haiku 5.5, low effort
     python run_harness.py 1 1 --harness DIR --out DIR --workers 4 --no-score
     python run_harness.py 1 1 --noise clean    # noise-free grid A data, and the prompt says so
+    python run_harness.py 1 1 --config ../scorer/config_rsi.json   # also scores the hidden monitor grid M
 
 What the agent gets (assembled here, never edited by the agent):
   prompt.md                    task, data, scoring, submission format (locked in every scope;
@@ -15,7 +16,8 @@ What the agent gets (assembled here, never edited by the agent):
                                --noise clean uses sandbox_data_clean instead)
 
 Each run writes runs/<tag>/: transcript.json, final.md, submission.json, meta.json and, unless
---no-score, score/public.json and score/private.json from scorer/score.py with config_min.json.
+--no-score, score/public.json and score/private.json from scorer/score.py with --config
+(config_min.json by default; config_rsi.json adds grid M, scored privately like grid A).
 Uses the shared Fall DRA/.venv (anthropic and ANDES), and Docker image harness-v0-py:
     docker build -t harness-v0-py .
 """
@@ -61,7 +63,8 @@ ap.add_argument("model", type=int, choices=[1, 2, 3], help="1 Haiku, 2 Sonnet, 3
 ap.add_argument("effort", type=int, choices=[1, 2, 3, 4, 5], help="1 low ... 5 max")
 ap.add_argument("--harness", default=os.path.join(HERE, "harness"), help="folder with system.md, method.md, tools/")
 ap.add_argument("--out", default=os.path.join(HERE, "runs"), help="parent folder for this run's results")
-ap.add_argument("--config", default=os.path.join(SCORER, "config_min.json"))
+ap.add_argument("--config", default=os.path.join(SCORER, "config_min.json"),
+                help="scorer config; ../scorer/config_rsi.json adds the hidden monitor grid M")
 ap.add_argument("--workers", type=int, default=None, help="ANDES worker processes for scoring")
 ap.add_argument("--noise", choices=["noisy", "clean"], default="noisy",
                 help="grid A data with PMU-grade noise (default) or noise-free; also sets the prompt's noise sentence")
@@ -85,11 +88,16 @@ print(f"Using {MODEL} at effort {EFFORT}, harness {HARNESS}\nData: {args.noise} 
 
 
 def harness_hash(folder):
-    """sha256 over the editable surface, so every run records exactly which harness produced it."""
+    """sha256 over the editable surface, so every run records exactly which harness produced it.
+    Caches and dotfiles are skipped: Finder writes .DS_Store into a folder just because it was opened,
+    and that must not change the hash. A folder without them hashes as it did before this rule."""
     h = hashlib.sha256()
     for r, _, fs in sorted(os.walk(folder)):
+        rel = os.path.relpath(r, folder)
+        if "__pycache__" in r or any(part.startswith(".") for part in rel.split(os.sep) if part != "."):
+            continue
         for f in sorted(fs):
-            if "__pycache__" in r:
+            if f.startswith("."):
                 continue
             p = os.path.join(r, f)
             h.update(os.path.relpath(p, folder).encode())
@@ -104,7 +112,7 @@ def harness_hash(folder):
 SANDBOX = os.path.join(HERE, f".work_{uuid.uuid4().hex[:8]}")
 shutil.copytree(DATA, SANDBOX)
 shutil.copytree(os.path.join(HARNESS, "tools"), os.path.join(SANDBOX, "tools"),
-                ignore=shutil.ignore_patterns("__pycache__"))
+                ignore=shutil.ignore_patterns("__pycache__", ".*"))   # what harness_hash covers
 # locked: the scorer's own parser, so the checker always applies the scorer's rules
 shutil.copy(os.path.join(SCORER, "symbolic.py"), os.path.join(SANDBOX, "tools", "symbolic.py"))
 atexit.register(shutil.rmtree, SANDBOX, ignore_errors=True)
@@ -131,9 +139,11 @@ def run_python(code):
                             "timeout", "120", "python", "-c", code],
                            capture_output=True, text=True, timeout=150)
         if r.returncode == 124:
+            state["tool_timeouts"] += 1
             return "ERROR: timed out after 120 s"
         return (r.stdout + r.stderr)[-TOOL_OUT_CHARS:]
     except subprocess.TimeoutExpired:
+        state["tool_timeouts"] += 1
         return "ERROR: timed out after 120 s"
 
 
@@ -165,7 +175,10 @@ content = [{"type": "image", "source": {"type": "base64", "media_type": "image/p
            {"type": "text", "text": SYSTEM},
            {"type": "text", "text": METHOD}]
 messages = [{"role": "user", "content": content}]
-state = {"spent": 0.0, "steps": 0, "tool_calls": 0, "budget_stop": False, "t0": time.monotonic()}
+# tool_timeouts counts run_python calls cut off at 120 s. Machine load changes how often that
+# happens (about 4% of calls in the Oct 11-17 batches), so keep it next to the score.
+state = {"spent": 0.0, "steps": 0, "tool_calls": 0, "tool_timeouts": 0, "budget_stop": False,
+         "t0": time.monotonic()}
 last = None
 
 
@@ -245,8 +258,10 @@ print(final)
 
 meta = {"tag": TAG, "model": MODEL, "effort": EFFORT, "harness": HARNESS, "harness_sha": harness_hash(HARNESS),
         "spent_usd": round(state["spent"], 4), "steps": state["steps"], "tool_calls": state["tool_calls"],
-        "budget_stop": state["budget_stop"], "agent_seconds": round(time.monotonic() - state["t0"], 1),
-        "submission_source": source, "data": DATA, "noise": args.noise}
+        "tool_timeouts": state["tool_timeouts"], "budget_stop": state["budget_stop"],
+        "agent_seconds": round(time.monotonic() - state["t0"], 1),
+        "submission_source": source, "data": DATA, "noise": args.noise,
+        "config": None if args.no_score else os.path.abspath(args.config)}
 
 if not args.no_score:
     cmd = [sys.executable, os.path.join(SCORER, "score.py"), sub_path, "--config", args.config,

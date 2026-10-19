@@ -56,6 +56,7 @@ cd "Fall DRA/Harness_testing/scorer"
 PY=../../.venv/bin/python
 $PY score.py baselines/flat.json --config config_min.json --out runs/flat
 $PY score.py path/to/submission.json --config config_min.json --out runs/<name> [--workers 4]
+$PY score.py path/to/submission.json --config config_rsi.json --out runs/<name>   # adds grid M (monitor)
 $PY tests/test_scorer.py            # config_min.json; --quick skips the sensitivity sweep
 ```
 
@@ -105,6 +106,7 @@ Before scoring I reproduced your `test_1` and `train_3` CSVs with my ANDES insta
 | `cases.py` | loads grids in the `kundur_family_v1` format (test_cases/grid_*) |
 | `grids/kundur_family.py` | rebuilds any Kundur-family grid from its `holdout/case.json` (network, operating point, events) with any device in the slot |
 | `config_min.json` | minimum test cases: grid B as the selection grid, grid A's two held-out runs as a private same-grid diagnostic |
+| `config_rsi.json` | for RSI runs and anything compared with them: `config_min.json` plus grid M as a hidden monitor (role `monitor`, private, never used to accept). Built and checked in `../test_cases` (grid M section of its README) |
 | `truth/regf1_spec.py` | REGF1 as a submission (full and ideal current loop) |
 | `baselines/flat.json` | floor baseline |
 | `tests/test_scorer.py` | the checks above |
@@ -113,7 +115,7 @@ Before scoring I reproduced your `test_1` and `train_3` CSVs with my ANDES insta
 
 1. **Closed loop compresses the scale.** In open-loop replay, wdrp × 0.8 scored 0.40. Closed loop it scores 0.13, because the grid partly absorbs the device's error. Good and mediocre candidates now differ by smaller numbers, which matters for how many reps the keep/revert rule needs.
 2. **The score still leans on the P side, and that is physics.** At 20% off, Qdrp costs about 0.04 to 0.05 and wdrp about 0.12. A Q-V droop of 4% is stiff next to the network reactance the device sees (about 0.3 pu on its rating), so the network largely sets Q and the slope barely moves it: in steady state $\Delta Q = \Delta V_{set}/(R_q + X_{th})$. Voltage-reference steps in the new cases give clean Q-V runs but do not change that ratio. Q-V droop errors register at full size in PAR and in the Q/V frequency-response entry.
-3. **The droop errors leak the true droop to the updater** via `public.json` plus the transcripts. This is undecided from before.
+3. **The droop errors leak the true droop to the updater** via `public.json` plus the transcripts. Decided Oct 17: the updater gets only the composite, the TD per held-out run and channel, and failure messages, since an operator could compute TD from held-out recordings but FR and PAR need the true model. FR and PAR still feed the accept rule. `public.json` itself still carries them, so the RSI loop's context builder has to strip them. The composite minus half the TD still gives 0.3 FR + 0.2 PAR per run, one mixed number, which is one reason the updater gets no code execution.
 4. **Grid format (done for the Kundur family).** `kundur_family_v1` covers any grid derived from kundur_full. A different base network (IEEE 14 or 39 for the test tier) needs its own builder with the same `build(device, params, run, pycode_path, spec)` signature.
-5. **Cost.** Each held-out run costs one full ANDES simulation per submission. `config_min.json` has five runs (3 x 25 s on B, 2 x 20 s on A) and takes about 2.5 minutes per score on 2 cores in the cloud, less on your Mac with more workers. Dropping grid A's diagnostic runs from the config cuts that to about 1.7 minutes.
+5. **Cost.** Each held-out run costs one full ANDES simulation per submission. `config_min.json` has five runs (3 x 25 s on B, 2 x 20 s on A) and takes about 2.5 minutes per score on 2 cores in the cloud, less on your Mac with more workers. Dropping grid A's diagnostic runs from the config cuts that to about 1.7 minutes. `config_rsi.json` adds grid M's three 25 s runs, eight runs in all.
 6. **One operating point per grid in the scorer.** `cases.py` still requires every held-out run on a grid to share its t = 0 operating point, because FR and PAR are evaluated at one point. Grid A's training data uses three operating points; grid B's held-out runs share one.

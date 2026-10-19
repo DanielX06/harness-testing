@@ -2,7 +2,10 @@
 
     python draw_grids.py      # grid_A/sandbox_data/system_diagram.png (agent copy: no case or model names)
                               # grid_B/holdout/system_diagram.png      (for you; the agent never sees B)
+                              # grid_M/holdout/system_diagram.png      (for you; nobody else sees M)
+    python draw_grids.py M    # only the grids named (A, B, M), e.g. to leave the agent's copy untouched
 """
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -44,7 +47,7 @@ def draw(g):
                 ha="right" if left else "left")
 
     lines(X[1], X[5], Y0, 1)
-    lines(X[5], X[6], Y0, 2, "2 circuits")
+    lines(X[5], X[6], Y0, 2, g.get("label_56", "2 circuits"), out=g.get("out_56", 0))
     lines(X[6], X[7], Y0, 2, "2 circuits")
     lines(X[7], X[8], Y0, 3, g["tie_label"], out=g.get("tie_out", 0))
     lines(X[8], X[9], Y0, 2, "2 circuits")
@@ -98,7 +101,16 @@ GRID_B = dict(
            "unit's HV bus 9, 225 MW of load moved from bus 8 to bus 7, unit at 720 MW.",
            "Held-out runs at t = 2 s, 25 s each: voltage-reference step +2.5% (back at 14 s); L9 +50%; one 8-9 circuit trips."],
     out=HERE / "grid_B" / "holdout" / "system_diagram.png")
+GRID_M = dict(
+    tie_label="tie line, 3 circuits", label_56="1 of 2 in service", out_56=1, g2="500 MW", g4="650 MW",
+    dev="900 MVA, 650 MW\nvoltage schedule 1.01 pu",
+    loads={7: "L7  1000 MW", 8: "L8  1150 MW", 10: "L10  300 MW"},
+    notes=["Grid M (hidden monitor: selects nothing, never shown to the agent or the updater): Kundur re-arranged another "
+           "way. One 5-6 circuit out (dashed), L10 doubled to 300 MW, G2 at 500 MW, unit at 650 MW.",
+           "Held-out runs at t = 2 s, 25 s each: voltage-reference step -1.5% (back at 14 s); L10 -40%; one 6-7 circuit trips."],
+    out=HERE / "grid_M" / "holdout" / "system_diagram.png")
+GRIDS = {"A": GRID_A, "B": GRID_B, "M": GRID_M}
 
 if __name__ == "__main__":
-    for g in (GRID_A, GRID_B):
-        draw(g)
+    for key in sys.argv[1:] or GRIDS:
+        draw(GRIDS[key.upper()])

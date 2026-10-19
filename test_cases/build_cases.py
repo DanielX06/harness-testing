@@ -1,7 +1,7 @@
 """
 Builds the minimum test cases for the harness, deterministic from the seeds below.
 
-    python build_cases.py                 # both grids
+    python build_cases.py                 # all three grids
     python build_cases.py --grids B --workers 4
 
 grid_A  training grid: Kundur two-area, the device in GENROU 3's slot. Recorded data an operator
@@ -11,8 +11,12 @@ grid_A  training grid: Kundur two-area, the device in GENROU 3's slot. Recorded 
 grid_B  selection grid: the same machines re-arranged (one 7-8 tie circuit out, a new load at
         the device's HV bus, different dispatch and voltage schedule). Held-out runs only; the
         agent never sees it. The scorer replays its runs closed loop with the submission.
+grid_M  hidden monitor grid: re-arranged another way (one 5-6 circuit out, a heavier load at
+        bus 10, different dispatch and voltage schedule). Held-out runs only. Nothing
+        selects on it and neither the agent nor the RSI updater sees it; it is logged privately
+        to show whether gains on grid B carry over to a grid nobody tuned on.
 
-The same device (REGF1, parameters from the medium Kundur case) sits in both grids.
+The same device (REGF1, parameters from the medium Kundur case) sits in every grid.
 Every run is rebuilt by Harness_testing/scorer/grids/kundur_family.py from holdout/case.json,
 so the scorer replays exactly these events.
 """
@@ -127,7 +131,44 @@ GRID_B = {
         "B_line": {"split": "holdout", "op": "opB", "tf": 25.0, "events": [{"kind": "line_trip", "t": 2.0, "line": "Line_7"}]},
     },
 }
-GRIDS = {"A": GRID_A, "B": GRID_B}
+
+# ---- grid M: re-arranged Kundur (hidden monitor) ------------------------------------------------
+# Nothing selects on this grid and neither the agent nor the updater ever sees it: score.py keeps
+# it out of public.json, and an RSI loop only logs it. If the score on grid B keeps improving while
+# grid M's stalls, the loop is tuning to B. The runs are the same three kinds as B's (a
+# voltage-reference step, a load change, a line opening) but in other places, directions and sizes,
+# on a different arrangement at a similar strength, so a real improvement should show on both grids.
+# Damping decided the operating point. The first draft (680 MW, 0.99 pu schedule) left the true device
+# with a 0.93 Hz mode at a damping ratio of 0.009, and its voltage-reference run swung V between 0.84
+# and 1.15 pu. At 650 MW and 1.01 pu the least-damped mode is 0.92 Hz at 0.056, next to grid A's 0.058
+# (0.59 Hz, op1) and grid B's 0.079 (0.53 Hz). ANDES EIG with the true device in the slot. Damping
+# falls as the voltage drops, so the voltage-reference step goes down only 1.5%: at -2.5% the
+# lowered setpoint sat in a less damped region and the 0.9 Hz swing barely decayed for 12 s.
+# The line opening is a 6-7 circuit. Opening a 9-10 circuit moved the device's P by an RMSE of only
+# 0.0019 pu, under the scorer's 3-sigma floor (0.003), so a flat model scored 0.97 instead of 1. The
+# 6-7 circuit moves P and Q by 0.021 and 0.037 (B_line: 0.016 and 0.069). Deliberately wrong models
+# cost within about 25% of what they cost on grid B, except a 30% low KPv, which saturates two of M's
+# three runs (1.04 against 0.53 on B; grid A's held-out runs saturate too). See monitor_check.json.
+GRID_M = {
+    "format": "kundur_family_v1", "name": "grid_M",
+    "description": "Kundur two-area re-arranged another way: device in GENROU 3's slot; all three 7-8 tie "
+                   "circuits in service; one of the two 5-6 circuits (Line_1) out; PQ_2 at bus 10 doubled to "
+                   "300 MW; bus-7 load 1000 MW, bus-8 load 1150 MW; GENROU 2 at 500 MW and GENROU 4 at 650 MW; "
+                   "device at 650 MW with a 1.01 pu voltage schedule",
+    "device": {"syn": 3},
+    "network": {"extra_loads": [{"idx": "PQ_2", "bus": 10, "p0": 3.0, "q0": 0.0}]},
+    "operating_points": {
+        "opM": {"pv": {"2": {"p0": 5.0}, "3": {"p0": 6.5, "v0": 1.01}, "4": {"p0": 6.5}},
+                "pq": {"PQ_0": {"p0": 10.0}, "PQ_1": {"p0": 11.5}}, "lines_out": ["Line_1"]},
+    },
+    "runs": {
+        "M_vref": {"split": "holdout", "op": "opM", "tf": 25.0, "events": vsteps((2.0, -0.015), (14.0, 0.015))},
+        "M_load": {"split": "holdout", "op": "opM", "tf": 25.0,
+                   "events": [{"kind": "load_scale", "t": 2.0, "load": "PQ_2", "p": 0.6, "q": 0.6}]},
+        "M_line": {"split": "holdout", "op": "opM", "tf": 25.0, "events": [{"kind": "line_trip", "t": 2.0, "line": "Line_2"}]},
+    },
+}
+GRIDS = {"A": GRID_A, "B": GRID_B, "M": GRID_M}
 
 
 # ---- simulation ----------------------------------------------------------------------------
@@ -239,7 +280,8 @@ def operator_log(events):
 
 
 LOAD_BUS = {"PQ_0": 7, "PQ_1": 8, "PQ_2": 10, "PQ_3": 9}
-LINE_BUSES = {"Line_4": (7, 8), "Line_5": (7, 8), "Line_6": (7, 8), "Line_7": (8, 9), "Line_8": (8, 9),
+LINE_BUSES = {"Line_0": (5, 6), "Line_1": (5, 6), "Line_2": (6, 7), "Line_3": (6, 7),
+              "Line_4": (7, 8), "Line_5": (7, 8), "Line_6": (7, 8), "Line_7": (8, 9), "Line_8": (8, 9),
               "Line_9": (9, 10), "Line_10": (9, 10)}
 
 
@@ -318,7 +360,7 @@ def build_grid(key, spec, results, out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--grids", default="A,B")
+    ap.add_argument("--grids", default="A,B,M")
     ap.add_argument("--workers", type=int, default=max(1, (mp.cpu_count() or 2) - 1))
     ap.add_argument("--out", default=str(HERE))
     a = ap.parse_args()
