@@ -382,7 +382,7 @@ def propose(run_paths, harness_dir, out_dir, scope="tools", history=None, model=
 
     if client is None:
         import anthropic
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(max_retries=6)     # rides out short overloads in an unattended loop
     messages = [{"role": "user", "content": ctx.content}]
     spent, turns, manifest, status, nudged = 0.0, 0, None, None, False
     usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}

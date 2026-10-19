@@ -49,6 +49,7 @@ if not os.path.exists(os.path.join(C.DATA_DIRS["clean"], _val)):
 SOURCES = sorted(os.path.join(BATCH, d) for d in os.listdir(BATCH) if os.path.isdir(os.path.join(BATCH, d)))
 rng = random.Random(1)
 H = C._runner()["harness_hash"]
+_tag = [0]
 
 
 def fake_runner(harness, out, n, a, log):
@@ -58,7 +59,9 @@ def fake_runner(harness, out, n, a, log):
     made = []
     for _ in range(n):
         src = rng.choice(SOURCES)
-        tag = time.strftime("%Y%m%d_%H%M%S") + f"_haiku_low_{rng.getrandbits(16):04x}"
+        rng.getrandbits(16)                       # keeps the sampled sources as they were before the counter
+        _tag[0] += 1                              # tags sort in run order, as real ones do (runs start 2 s apart)
+        tag = time.strftime("%Y%m%d_%H%M%S") + f"_haiku_low_{_tag[0]:04x}"
         d = os.path.join(out, tag)
         shutil.copytree(src, d)
         meta = json.load(open(os.path.join(d, "meta.json")))
@@ -160,6 +163,110 @@ exp2 = os.path.join(tmp, "exp2")
 L.loop(L.parse(["--iters", "5", "--reps", "2", "--patience", "2", "--smoke", "local", "--smoke-python",
                 args.smoke_python, "--out", exp2]), client=client, runner=fake_runner)
 check(len(open(os.path.join(exp2, "history.jsonl")).readlines()) == 2, "--patience 2 stops after two misses")
+
+# crash and resume: a crash in the middle of h001's confirmation runs, then one in the middle of h002's proposal
+class Crash(Exception):
+    pass
+
+
+calls = {}
+
+
+def crashing_runner(harness, out, n, a, log):
+    """Crashes on the second block into runs/h001 (its confirmation runs) after making 2 of them."""
+    b = os.path.basename(out)
+    calls[b] = calls.get(b, 0) + 1
+    if b == "h001" and calls[b] == 2:
+        fake_runner(harness, out, 2, a, log)
+        raise Crash("simulated crash during confirmation runs")
+    return fake_runner(harness, out, n, a, log)
+
+
+GOOD = [reply(use("write_file", path="tools/closed_loop_check.py", content=TOOL),
+              use("write_file", path="method.md", content=METHOD), use("finish", **FIN)), reply(use("finish", **FIN))]
+CAREFUL = [reply(use("write_file", path="method.md", content=METHOD + "9. Be careful.\n"), use("finish", **FIN)),
+           reply(use("finish", **FIN))]
+exp3 = os.path.join(tmp, "exp3")
+argv3 = ["--iters", "3", "--reps", "4", "--confirm", "4", "--patience", "5", "--smoke", "local",
+         "--smoke-python", args.smoke_python, "--out", exp3]
+try:
+    L.loop(L.parse(argv3), client=FakeClient(GOOD), runner=crashing_runner)
+    crashed = False
+except Crash:
+    crashed = True
+runs_h001 = L.read_runs(os.path.join(exp3, "runs", "h001"))
+check(crashed and not os.path.exists(os.path.join(exp3, "loop.lock")) and len(runs_h001) == 6 and
+      open(os.path.join(exp3, "history.jsonl")).read() == "",
+      "crash 1: lock released, h001 has 4 + 2 runs, no iteration recorded")
+first4 = [r["dir"] for r in runs_h001[:4]]
+
+# a live loop on this machine holding the lock stops a resume
+json.dump({"pid": os.getppid(), "host": L.socket.gethostname()}, open(os.path.join(exp3, "loop.lock"), "w"))
+try:
+    L.loop(L.parse(["--resume", exp3]), client=FakeClient([]), runner=fake_runner)
+    refused = False
+except SystemExit as e:
+    refused = "loop.lock" in str(e)
+check(refused, "a resume refuses a folder another live loop holds")
+os.remove(os.path.join(exp3, "loop.lock"))
+
+# resume 1: finishes h001 from its saved proposal (2 more confirmation runs), then crashes inside h002's proposal
+try:
+    L.loop(L.parse(["--resume", exp3]), client=FakeClient(CAREFUL[:1]), runner=fake_runner)
+    crashed = False
+except IndexError:                                             # the scripted updater runs out mid-proposal
+    crashed = True
+hist = [json.loads(l) for l in open(os.path.join(exp3, "history.jsonl"))]
+h1 = L.read_runs(os.path.join(exp3, "runs", "h001"))
+check(crashed and [h["outcome"] for h in hist] == ["accepted"] and hist[0]["n_candidate"] == 8 and len(h1) == 8
+      and [r["dir"] for r in h1[:4]] == first4,
+      "resume 1: h001 kept on 4 + 4 runs, its first 4 runs unchanged, no proposal remade")
+check(os.path.isdir(os.path.join(exp3, "candidates", "h002")) and
+      not os.path.exists(os.path.join(exp3, "candidates", "h002", "proposal.json")),
+      "crash 2: h002 left without a proposal.json")
+
+# resume 2: h002 is remade, then h003 proposes exactly what h002 did
+L.loop(L.parse(["--resume", exp3, "--iters", "3"]), client=FakeClient(CAREFUL + CAREFUL), runner=fake_runner)
+hist = [json.loads(l) for l in open(os.path.join(exp3, "history.jsonl"))]
+check([h["outcome"] for h in hist] == ["accepted", "rejected", "rejected"] and [h["iteration"] for h in hist] == [1, 2, 3],
+      f"resume 2: outcomes {[h['outcome'] for h in hist]}, iterations 1 to 3 once each")
+check(any(d.startswith("h002.interrupted_") for d in os.listdir(os.path.join(exp3, "candidates"))),
+      "the interrupted h002 was moved aside and made again")
+mon = [json.loads(l) for l in open(os.path.join(exp3, "monitor.jsonl"))]
+check([m["harness"] for m in mon] == ["h000", "h001", "h002", "h003"], "monitor.jsonl has one line per block, no repeats")
+cyc = [json.loads(l) for l in open(os.path.join(exp3, "cycles.jsonl"))]
+check([c["candidate"] for c in cyc] == ["h001", "h002", "h003"] and cyc[2]["same_harness_as"] == ["h002"] and
+      cyc[2]["same_file_as"] == {"method.md": ["h002"]} and not cyc[1]["same_harness_as"] and not cyc[0]["same_file_as"],
+      "cycles.jsonl: h003 is the same harness as the rejected h002")
+summ = open(os.path.join(exp3, "summary.md")).read()
+ctx3 = open(os.path.join(exp3, "candidates", "h003", "context.md")).read()
+check("whole harness = h002" in summ and "same_harness_as" not in ctx3 and "cycles" not in ctx3,
+      "the repeat shows in summary.md and never in the updater's context")
+state = json.load(open(os.path.join(exp3, "state.json")))
+n_runs = sum(len(L.read_runs(os.path.join(exp3, "runs", h))) for h in ("h000", "h001", "h002", "h003"))
+upd = sum(json.load(open(os.path.join(exp3, "candidates", h, "proposal.json")))["updater"]["spent_usd"]
+          for h in ("h001", "h002", "h003"))
+check(abs(state["spent_usd"] - (0.02 * n_runs + upd)) < 1e-3 and n_runs == 4 + 8 + 4 + 4,
+      f"spend is counted once from the files (${state['spent_usd']:.3f}, {n_runs} runs)")
+cfg = json.load(open(os.path.join(exp3, "config.json")))
+check(len(cfg["resumes"]) == 2 and cfg["resumes"][1]["changed"] == {} and cfg["reps"] == 4 and cfg["confirm"] == 4
+      and not os.path.exists(os.path.join(exp3, "loop.lock")),
+      "config.json records both resumes and keeps the original settings")
+
+# resuming a finished experiment does nothing; --iters extends it
+n_before = len(open(os.path.join(exp3, "history.jsonl")).readlines())
+L.loop(L.parse(["--resume", exp3]), client=FakeClient([]), runner=fake_runner)
+check(len(open(os.path.join(exp3, "history.jsonl")).readlines()) == n_before, "resuming a finished run changes nothing")
+L.loop(L.parse(["--resume", exp3, "--iters", "4"]), client=FakeClient(CAREFUL), runner=fake_runner)
+cyc = [json.loads(l) for l in open(os.path.join(exp3, "cycles.jsonl"))]
+check(len(open(os.path.join(exp3, "history.jsonl")).readlines()) == 4 and cyc[3]["same_harness_as"] == ["h002", "h003"],
+      "--iters 4 adds one iteration, and a third identical proposal matches both earlier ones")
+try:
+    L.parse(["--resume", exp3, "--reps", "10"])
+    took = True
+except SystemExit:
+    took = False
+check(not took, "--resume refuses settings that would change the experiment (--reps)")
 
 # the permutation test
 check(abs(L.perm_p([1, 2], [3, 4]) - 1 / 6) < 1e-12 and L.perm_p([3, 4], [1, 2]) == 1.0, "permutation p-values exact")

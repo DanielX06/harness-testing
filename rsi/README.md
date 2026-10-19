@@ -9,8 +9,8 @@ The recursive self-improvement loop for `harness_v0`. An updater model reads how
 | `test_context.py` | 25 checks on temporary copies of the Oct 13 batch: both scopes, history rendering, scrubbing, every leak check, the budget reductions, and that caches and dotfiles stay out of part 1 and out of the harness hash |
 | `propose.py` | one updater call: builds the context, lets the updater edit a copy of the harness, checks the result and writes a candidate folder |
 | `test_propose.py` | 29 checks with a scripted fake updater (no API call): refused paths, every check, every status, cost |
-| `run_rsi.py` | the loop: fresh baseline runs of harness_v0, then propose, fresh solver runs, keep or reject, for --iters iterations |
-| `test_rsi.py` | 13 end-to-end checks with a fake updater and a fake solver (re-stamped Oct 13 runs) |
+| `run_rsi.py` | the loop: fresh baseline runs of harness_v0, then propose, fresh solver runs, keep or reject, for --iters iterations; `--resume` carries on an interrupted experiment |
+| `test_rsi.py` | 27 end-to-end checks with a fake updater and a fake solver (re-stamped Oct 13 runs), including a crash during confirmation runs, a crash mid-proposal, both resumes and the cycle record |
 | `previews/oct13_clean/` | the context built from the Oct 13 clean batch: `context.md` (readable, with the diagram as a placeholder line) and `stats.json` |
 
 ## Building a context
@@ -47,7 +47,28 @@ Nothing from earlier batches is used. The loop copies harness_v0 to `candidates/
 
 The smallest p a permutation test can give is 1/C(n_candidate + n_current, n_candidate): 1/6 for 2 runs against 2, 1/20 for 3 against 3, 1/70 for 4 against 4. So below 3 runs a side nothing can be kept at α = 0.10, and the loop warns if that's the case.
 
-Everything goes in `experiments/<date>_<time>/` (or `--out`): `candidates/hNNN/` (each proposal, with its harness), `runs/hNNN/` (each harness's solver runs), `history.jsonl` (what later updaters see), `state.json` and `loop.log`. `monitor.jsonl` and `summary.md` are for you only: they put grid M and grid A's held-out runs beside grid B for every block, with the M - B gap, and nothing reads them back into the loop. The loop does not resume after a crash yet, which matters before a weekend run.
+Everything goes in `experiments/<date>_<time>/` (or `--out`): `candidates/hNNN/` (each proposal, with its harness), `runs/hNNN/` (each harness's solver runs), `history.jsonl` (what later updaters see), `state.json` and `loop.log`. `monitor.jsonl` and `summary.md` are for you only: they put grid M and grid A's held-out runs beside grid B for every block, with the M - B gap, and nothing reads them back into the loop. `cycles.jsonl` is also yours only. For every candidate it lists the earlier harnesses (other than its parent) it returns to: the same whole harness by hash, or the same content for a file it changed, with trailing whitespace and blank lines ignored. A match with a rejected candidate is a repeated proposal; a match with h000 or an older kept harness is a step back. summary.md shows the matches in its `repeats` column.
+
+### Resuming
+
+```bash
+$PY run_rsi.py --resume experiments/20261020_210000                # carry on where it stopped
+$PY run_rsi.py --resume experiments/20261020_210000 --iters 40     # extend a finished run
+```
+
+`history.jsonl` is the record of finished iterations, and a line is written there last, so everything else is rebuilt from it and from the run folders. An interrupted iteration picks up where it stopped. A saved `proposal.json` is reused rather than paid for again. Scored runs are kept and only the missing ones are run. The keep test uses the candidate's first `--reps` runs, so a crash during confirmation runs reaches the same decision as an uninterrupted loop. A proposal cut off before `proposal.json` was written is moved to `candidates/hNNN.interrupted_<time>` and made again; its updater cost (usually about $0.13, at most `--updater-max-usd`) is the one thing not counted. Spend is recomputed from every `meta.json` and `proposal.json` each iteration, so `--max-usd` holds across resumes. `--resume` accepts only `--iters`, `--patience`, `--max-usd`, `--parallel`, `--workers` and `--updater-max-usd`; anything else would change the experiment, and `config.json` records each resume and what it changed.
+
+`loop.lock` holds the running loop's pid, and a second loop on the same machine refuses the folder. After a reboot a stale lock is ignored unless the old pid now belongs to a live process; if the loop refuses a folder you know is idle, delete `loop.lock`. Stopping the loop (Ctrl-C, `kill`, closing its terminal) stops its solver runs as well, so a resumed loop never shares a folder with orphaned runs. The updater client retries API errors 6 times before the loop gives up.
+
+For a run that should survive crashes while you're away, run it inside tmux (WSL on the desktop) with a retry loop. The loop exits 0 when it finishes or stops on patience or budget, and non-zero when it crashes, so only a crash leads to a resume (up to 5, five minutes apart):
+
+```bash
+EXP=experiments/long1
+$PY run_rsi.py --iters 30 --reps 10 --confirm 20 --parallel 4 --workers 4 --patience 10 --out $EXP || \
+  for i in 1 2 3 4 5; do sleep 300; $PY run_rsi.py --resume $EXP && break; done
+```
+
+A machine reboot (Windows Update) kills tmux too, so after one, open WSL, start Docker Desktop and run the `--resume` line by hand.
 
 ## Proposing a candidate (step 3)
 
