@@ -10,7 +10,9 @@ sandbox is needed; ANDES runs in parallel worker processes.
 Per grid:  score = w_td * TD + w_fr * FR + w_par * PAR, each component capped at 2
            (flat prediction = 1.0 on every component, perfect = 0, failure = 2)
 Per role:  (1 - w) * mean + w * worst over that role's grids
-Writes DIR/public.json (selection grids only, what the updater may see) and DIR/private.json.
+Writes DIR/public.json (selection grids only, what the updater may see) and DIR/private.json,
+and DIR/andes/ (private): an ANDES log per simulation, plus the last DEBUG lines (*.debug.log,
+gitignored) and the trajectory up to the failure (*_partial.npz) for every simulation that failed.
 """
 import argparse
 import json
@@ -107,7 +109,9 @@ def score_grid(g, S, m, results):
     return score, public, private
 
 
-def score_submission(submission, config_path, n_workers=None):
+def score_submission(submission, config_path, n_workers=None, log_dir=None):
+    """log_dir: where each simulation's ANDES log (and, for a failure, its partial trajectory) goes.
+    Private: give it a folder beside private.json, never one the loop reads."""
     cfg, grids = load_config(config_path)
     S = {k: v for k, v in cfg.items() if k != "grids"}
     w = time.monotonic()
@@ -134,7 +138,8 @@ def score_submission(submission, config_path, n_workers=None):
         finally:
             CL.unregister(cls)
         tasks = [{"id": f"{g.name}__{r.id}", "builder": g.builder, "run": r.id, "grid_spec": g.spec_text,
-                  "tf": float(r.t[-1]), "tstep": float(r.t[1] - r.t[0])} for g in grids for r in g.runs]
+                  "tf": float(r.t[-1]), "tstep": float(r.t[1] - r.t[0]), "log_dir": log_dir}
+                 for g in grids for r in g.runs]
         results = CL.run_many(tasks, canon, cls, pycode, n_workers=n_workers, timeout_s=S["run_timeout_s"])
     finally:
         if pycode:
@@ -166,9 +171,15 @@ def main():
     ap.add_argument("--out", default=None, help="directory for public.json / private.json")
     ap.add_argument("--workers", type=int, default=None)
     a = ap.parse_args()
+    import logging
     import andes
-    andes.config_logger(stream_level=40)
-    public, private = score_submission(a.submission, a.config, n_workers=a.workers)
+    log_dir = os.path.join(a.out, "andes") if a.out else None
+    if log_dir:                                # code generation's log; the workers write their own
+        os.makedirs(log_dir, exist_ok=True)
+        andes.config_logger(stream_level=40, log_path=log_dir, log_file="codegen.log", file_level=logging.INFO)
+    else:
+        andes.config_logger(stream_level=40, file=False)
+    public, private = score_submission(a.submission, a.config, n_workers=a.workers, log_dir=log_dir)
     print(json.dumps(public, indent=1))
     print("role scores (private):", private["role_scores"], f"in {private['wall_seconds']} s")
     if a.out:
