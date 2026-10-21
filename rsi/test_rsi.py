@@ -218,9 +218,11 @@ except IndexError:                                             # the scripted up
     crashed = True
 hist = [json.loads(l) for l in open(os.path.join(exp3, "history.jsonl"))]
 h1 = L.read_runs(os.path.join(exp3, "runs", "h001"))
-check(crashed and [h["outcome"] for h in hist] == ["accepted"] and hist[0]["n_candidate"] == 8 and len(h1) == 8
+fresh_mean = sum(r["composite"] for r in h1[4:8]) / 4
+check(crashed and [h["outcome"] for h in hist] == ["accepted"] and hist[0]["n_candidate"] == 4 and len(h1) == 8
+      and hist[0]["first_pass"]["n_candidate"] == 4 and abs(hist[0]["mean_candidate"] - fresh_mean) < 1e-12
       and [r["dir"] for r in h1[:4]] == first4,
-      "resume 1: h001 kept on 4 + 4 runs, its first 4 runs unchanged, no proposal remade")
+      "resume 1: h001 kept on 4 runs, then confirmed on its 4 new runs alone; first 4 runs unchanged, no proposal remade")
 check(os.path.isdir(os.path.join(exp3, "candidates", "h002")) and
       not os.path.exists(os.path.join(exp3, "candidates", "h002", "proposal.json")),
       "crash 2: h002 left without a proposal.json")
@@ -267,6 +269,49 @@ try:
 except SystemExit:
     took = False
 check(not took, "--resume refuses settings that would change the experiment (--reps)")
+
+# the confirmation test sees only the new runs: a candidate whose first runs are good and whose
+# confirmation runs are bad is reverted, and the record holds the confirmation runs' numbers
+seen = {}
+
+
+def fading_runner(harness, out, n, a, log):
+    """The candidate's first block is the good harness's; every confirmation run scores exactly the
+    baseline's mean, so it is no better."""
+    b = os.path.basename(out)
+    seen[b] = seen.get(b, 0) + 1
+    made = fake_runner(harness, out, n, a, log)
+    if b != "h000" and seen[b] > 1:
+        base = [r["composite"] for r in L.read_runs(os.path.join(os.path.dirname(out), "h000"))]
+        for d in made:
+            f = os.path.join(d, "score", "public.json")
+            pub = json.load(open(f))
+            pub["score"] = sum(base) / len(base)
+            json.dump(pub, open(f, "w"))
+    return made
+
+
+exp4 = os.path.join(tmp, "exp4")
+L.loop(L.parse(["--iters", "1", "--reps", "6", "--baseline-reps", "4", "--confirm", "2", "--smoke", "local", "--smoke-python",
+                args.smoke_python, "--out", exp4]), client=FakeClient(GOOD), runner=fading_runner)
+hist = [json.loads(l) for l in open(os.path.join(exp4, "history.jsonl"))]
+h1 = L.read_runs(os.path.join(exp4, "runs", "h001"))
+pooled = L.compare(h1, L.read_runs(os.path.join(exp4, "runs", "h000")))
+check(pooled["mean_candidate"] < pooled["mean_incumbent"] and pooled["p_value"] <= 0.10,
+      f"the old rule (all 8 runs pooled) would have kept this candidate (p = {pooled['p_value']:.3f})")
+check(hist[0]["outcome"] == "reverted" and hist[0]["first_pass"]["p_value"] <= 0.10 and hist[0]["n_candidate"] == 2
+      and abs(hist[0]["mean_candidate"] - sum(r["composite"] for r in h1[6:]) / 2) < 1e-12,
+      "a candidate that passes on its first runs and not on its confirmation runs alone is reverted")
+ctx_fields = set(C.LOOP_FIELDS)
+check("first_pass" not in ctx_fields, "the first-pass numbers stay out of what the updater is shown")
+
+# the budget flags are in CAD; the old USD names still work and mean the same setting
+a = L.parse(["--iters", "1", "--max-cad", "40", "--updater-max-cad", "4"])
+b = L.parse(["--iters", "1", "--max-usd", "40", "--updater-max-usd", "4"])
+r = L.parse(["--resume", exp3, "--max-cad", "55", "--updater-max-cad", "3"])
+check(a.max_usd == b.max_usd == 40 and a.updater_max_usd == b.updater_max_usd == 4
+      and r.max_usd == 55 and r.updater_max_usd == 3,
+      "--max-cad and --updater-max-cad set the budgets, on a new run and on --resume; the old names still work")
 
 # the permutation test
 check(abs(L.perm_p([1, 2], [3, 4]) - 1 / 6) < 1e-12 and L.perm_p([3, 4], [1, 2]) == 1.0, "permutation p-values exact")

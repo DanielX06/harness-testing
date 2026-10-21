@@ -2,7 +2,7 @@
 iterations of propose, fresh solver runs of the candidate, keep or reject.
 
     python run_rsi.py --iters 5 --reps 4 --parallel 2              # a smoke test: about 2.5 hours
-    python run_rsi.py --iters 30 --reps 10 --confirm 20 --parallel 4 --patience 10
+    python run_rsi.py --iters 30 --reps 10 --confirm 10 --parallel 4 --patience 10
     python run_rsi.py --resume experiments/20261020_210000         # carry on after a crash or a stop
 
 Nothing from earlier batches is used: the first context is built from the baseline runs this loop makes.
@@ -12,8 +12,9 @@ Each iteration:
   2. --reps fresh solver runs of the candidate (run_harness.py, scored with --config).
   3. Keep it if its mean composite on the selection grid is lower than the current harness's, by a
      one-sided permutation test at --alpha over all the current harness's runs. With --confirm N, a kept
-     candidate gets N more runs and is tested again on all of its runs; if it no longer passes it is reverted.
-  4. Stop after --iters iterations, --patience attempts in a row that were not kept, or --max-usd spent.
+     candidate gets N more runs and is tested again on those N new runs alone, so the second test is
+     independent of the first; if it does not pass it is reverted.
+  4. Stop after --iters iterations, --patience attempts in a row that were not kept, or --max-cad spent.
 
 Resuming. history.jsonl is the record of finished iterations; everything else is rebuilt from it and from the
 run folders on disk. An interrupted iteration carries on where it stopped: a saved proposal is reused, scored
@@ -21,7 +22,7 @@ runs are kept and only the missing ones are run, and the keep test uses the cand
 it reaches the decision an uninterrupted loop would have. A proposal interrupted before proposal.json was
 written is moved to candidates/hNNN.interrupted_<time> and made again (its updater cost is not counted).
 Spend is always recomputed from the meta.json and proposal.json files, so nothing is counted twice.
---resume takes only --iters, --patience, --max-usd, --parallel, --workers and --updater-max-usd; the rest
+--resume takes only --iters, --patience, --max-cad, --parallel, --workers and --updater-max-cad; the rest
 comes from the experiment's config.json, which records each resume. loop.lock stops two loops sharing a folder.
 
 Everything goes in --out (default experiments/<date>_<time>):
@@ -381,6 +382,11 @@ def _loop(a, exp, log, client, runner, resuming):
     if floor > a.alpha:
         log(f"warning: with {a.reps} candidate runs against {a.baseline_reps} baseline runs the smallest possible "
             f"p is {floor:.3f}, above --alpha {a.alpha}, so no candidate can be kept. Use more --reps.")
+    if a.confirm:
+        cfloor = 1 / math.comb(a.baseline_reps + a.confirm, a.confirm)
+        if cfloor > a.alpha:
+            log(f"warning: the confirmation test uses only the {a.confirm} new runs, and its smallest possible p "
+                f"is {cfloor:.3f}, above --alpha {a.alpha}, so no candidate can be confirmed. Use more --confirm.")
     hist_path = os.path.join(exp, "history.jsonl")
     mon_path, cyc_path = os.path.join(exp, "monitor.jsonl"), os.path.join(exp, "cycles.jsonl")
     if resuming:
@@ -443,7 +449,7 @@ def _loop(a, exp, log, client, runner, resuming):
     for it in range(len(hist) + 1, a.iters + 1):
         spent = disk_spent(exp)
         if spent > a.max_usd:
-            log(f"stopping: ${spent:.2f} spent, past --max-usd {a.max_usd}")
+            log(f"stopping: ${spent:.2f} CAD spent, past --max-cad {a.max_usd}")
             break
         name = f"h{it:03d}"
         cdir = os.path.join(exp, "candidates", name)
@@ -493,9 +499,15 @@ def _loop(a, exp, log, client, runner, resuming):
                     need = a.reps + a.confirm - len(read_runs(cand_runs_dir))
                     if need > 0:
                         runner(cand_dir, cand_runs_dir, need, a, log)
-                    cand = read_runs(cand_runs_dir)
-                    cmp_ = compare(cand, incr)
-                    keep = cmp_["mean_candidate"] < cmp_["mean_incumbent"] and cmp_["p_value"] <= a.alpha
+                    first = {k: cmp_[k] for k in ("n_candidate", "mean_candidate", "p_value")}
+                    cand = read_runs(cand_runs_dir)[:a.reps + a.confirm]
+                    fresh = cand[a.reps:]                         # the confirmation runs alone, not the first a.reps
+                    if not fresh:
+                        keep = False
+                    else:
+                        cmp_ = compare(fresh, incr)
+                        keep = cmp_["mean_candidate"] < cmp_["mean_incumbent"] and cmp_["p_value"] <= a.alpha
+                    rec["first_pass"] = first
                     outcome = "accepted" if keep else "reverted"
                 td_c, fail_c = td_means(cand)
                 td_i, fail_i = td_means(incr)
@@ -520,7 +532,7 @@ def _loop(a, exp, log, client, runner, resuming):
         spent = disk_spent(exp)
         json.dump({"iteration": it, "current": inc, "misses_in_a_row": misses, "spent_usd": round(spent, 4)},
                   open(os.path.join(exp, "state.json"), "w"), indent=1)
-        log(f"   current harness {inc}; {misses} not kept in a row; ${spent:.2f} spent so far")
+        log(f"   current harness {inc}; {misses} not kept in a row; ${spent:.2f} CAD spent so far")
         if misses >= a.patience:
             log(f"stopping: {misses} attempts in a row were not kept (--patience {a.patience})")
             break
@@ -536,10 +548,10 @@ def parse(argv=None):
         rp.add_argument("--resume", required=True, metavar="EXPERIMENT", help="the experiment folder")
         rp.add_argument("--iters", type=int, help="new total number of iterations (to extend a finished run)")
         rp.add_argument("--patience", type=int)
-        rp.add_argument("--max-usd", type=float)
+        rp.add_argument("--max-cad", "--max-usd", dest="max_usd", type=float)
         rp.add_argument("--parallel", type=int)
         rp.add_argument("--workers", type=int)
-        rp.add_argument("--updater-max-usd", type=float)
+        rp.add_argument("--updater-max-cad", "--updater-max-usd", dest="updater_max_usd", type=float)
         r = rp.parse_args(argv)
         cfg = _load(os.path.join(r.resume, "config.json"))
         if cfg is None:
@@ -565,18 +577,21 @@ def parse(argv=None):
     ap.add_argument("--workers", type=int, default=None, help="ANDES workers per scoring run")
     ap.add_argument("--alpha", type=float, default=0.10, help="one-sided permutation-test level for keeping")
     ap.add_argument("--patience", type=int, default=10, help="stop after this many attempts in a row not kept")
-    ap.add_argument("--max-usd", type=float, default=20.0, help="stop starting iterations past this total spend")
+    ap.add_argument("--max-cad", "--max-usd", dest="max_usd", type=float, default=20.0,
+                    help="stop starting iterations past this total spend, in CAD (the account's billing currency; "
+                         "--max-usd is the old name)")
     ap.add_argument("--updater-model", default="claude-haiku-5-5")
     ap.add_argument("--updater-effort", default="high")
-    ap.add_argument("--updater-max-usd", type=float, default=2.0)
+    ap.add_argument("--updater-max-cad", "--updater-max-usd", dest="updater_max_usd", type=float, default=2.0,
+                    help="stop one updater call past this cost, in CAD (--updater-max-usd is the old name)")
     ap.add_argument("--last", type=int, default=20, help="newest runs of the current harness the updater sees")
     ap.add_argument("--smoke", choices=["docker", "local", "off"], default="docker")
     ap.add_argument("--smoke-python", default=None)
     ap.add_argument("--no-self-test", action="store_true")
     ap.add_argument("--out", default=None, help="experiment folder (default experiments/<date>_<time>)")
     ap.add_argument("--resume", metavar="EXPERIMENT", help="carry on an interrupted or finished experiment "
-                    "(see the module docstring; takes only --iters, --patience, --max-usd, --parallel, --workers, "
-                    "--updater-max-usd)")
+                    "(see the module docstring; takes only --iters, --patience, --max-cad, --parallel, --workers, "
+                    "--updater-max-cad)")
     a = ap.parse_args(argv)
     a.baseline_reps = a.baseline_reps or a.reps
     a.out = a.out or os.path.join(HERE, "experiments", time.strftime("%Y%m%d_%H%M%S"))
