@@ -8,7 +8,7 @@ Tdr decides what the droop does at 1 Hz: with Tdr = 5 s it barely acts there, so
 survives (Re G_QV(1 Hz) stays near +0.5); with Tdr = 1 s it cancels it (Re G_QV(1 Hz) near 0 or below).
 The script prints the linearized G_QV of each variant next to its scores so that is visible.
 
-    ../../../.venv/bin/python run_droop.py --workers 3       # 7 variants, about 1 min each
+    python experiments/qv_gain/run_droop.py --workers 3       # 7 variants, about 1 min each
 
 Results: variants/droop_*.json, scores/droop_*/, results_droop.md.
 How to read it:
@@ -26,13 +26,13 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))             # Harness_testing
-sys.path.insert(0, os.path.join(ROOT, "scorer"))
-import symbolic                                            # noqa: E402
-import metrics as M                                        # noqa: E402
-from cases import load_config                              # noqa: E402
+sys.path.insert(0, ROOT)
+from scorer.score_components import frequency_response     # noqa: E402
+from scorer.scoring_grids import load_scoring_config       # noqa: E402
+from scorer.submission_parser import TerminalModel         # noqa: E402
 
 BATCH = os.path.join(ROOT, "harness_v0", "runs", "batch_20261011_182645_m1e1")
-SCORE = os.path.join(ROOT, "scorer", "score.py")
+SCORE = os.path.join(ROOT, "scorer", "score_submission.py")
 CONFIG = os.path.join(HERE, "config_gridB.json")
 TRUE_GAIN = -25.10                                         # truth's steady-state dQ/dV on grid B (pu/pu)
 
@@ -51,8 +51,8 @@ ap.add_argument("--workers", type=int, default=3)
 ap.add_argument("--dry", action="store_true", help="build and linearize the variants, no scoring")
 args = ap.parse_args()
 
-_, grids = load_config(CONFIG)
-gB = grids[0]
+_, grids = load_scoring_config(CONFIG)
+grid_b = grids[0]
 os.makedirs(os.path.join(HERE, "variants"), exist_ok=True)
 rows = []
 for tag, gain, Tdr in VARIANTS:
@@ -69,8 +69,8 @@ for tag, gain, Tdr in VARIANTS:
     path = os.path.join(HERE, "variants", name + ".json")
     json.dump(sub, open(path, "w"), indent=1)
 
-    lin = symbolic.Model(sub).linearize(gB.op)
-    G = M.transfer(*[lin[x] for x in "ABCD"], [1e-4, 0.1, 1.0])[:, 1, 0]
+    lin = TerminalModel(sub).linearize(grid_b.operating_point)
+    G = frequency_response(*[lin[x] for x in "ABCD"], [1e-4, 0.1, 1.0])[:, 1, 0]
     gq = f"{G[0].real:+.1f} / {G[1].real:+.2f}{G[1].imag:+.2f}j / {G[2].real:+.2f}{G[2].imag:+.2f}j"
     head = f"| {tag} | {k:+.2f} | {Tdr:g} | {gq} |"
     print(f"{name}: G_QV(1e-4, 0.1, 1 Hz) = {gq}, init residual {lin['init_residual']:.1e}", flush=True)

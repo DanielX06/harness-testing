@@ -3,15 +3,17 @@
 Grid A is what the agent learns from: Kundur's two-area system with the device in generator 3's slot, recorded the way an operator would have it. Grid B is the selection grid. It's the same machines re-arranged, the agent never sees it, and its score is the one that goes to `public.json` for the updater. Grid M is the hidden monitor for RSI runs: re-arranged another way, scored privately on every run, and never used to select anything, so it can show whether gains on B carry over to a grid nobody tuned on. The same device (REGF1 with the parameters from the medium Kundur case) sits in all three. Test grids C, D and E come later. The builder already takes any Kundur-family layout, and a different base network needs one more builder file.
 
 ```bash
-cd "Fall DRA/Harness_testing/test_cases"
-PY=../../.venv/bin/python
-$PY build_cases.py --workers 6      # all three grids, deterministic; --grids M (or A, B, or a list like B,M) for some
-$PY draw_grids.py                   # the one-line diagrams; draw_grids.py M draws only grid M's
-$PY make_clean_sandbox.py           # noise-free copy of grid A's sandbox_data, for a baseline
-$PY check_grid.py M                 # truth and deliberately wrong models scored on M -> monitor_check.json
+cd "Fall DRA/Harness_testing"
+PY=../.venv/bin/python
+$PY test_cases/build_test_grids.py --workers 6         # all three grids, deterministic; --grids M (or A, B, or B,M) for some
+$PY test_cases/draw_grid_diagrams.py                   # the one-line diagrams; add M to draw only grid M's
+$PY test_cases/make_noise_free_sandbox.py              # noise-free copy of grid A's sandbox_data, for a baseline
+$PY test_cases/score_wrong_models_on_grid.py M         # truth and deliberately wrong models scored on M -> monitor_check.json
 ```
 
-Every run is described in `grid_*/holdout/case.json` (operating point plus every event, including the ambient load sequence's seed). The scorer rebuilds runs from that file with `scorer/grids/kundur_family.py`, so a held-out run is replayed with exactly the events that produced its recording.
+Each grid is defined in `grid_specs/grid_<X>.json`: its purpose, the case (the device's slot, the network changes, the operating points and every run's events, including the ambient load sequence's seed), the device under test (model, rating and ANDES parameters), the operator's description of each operating point for a grid with training runs, and design notes on why the grid is the way it is. `build_test_grids.py` writes the case unchanged to `grid_<X>/holdout/case.json`, and the scorer rebuilds every held-out run from that file with `scorer/grids/kundur_family_builder.py`, the same code that simulated it, so a held-out run is replayed with exactly the events that produced its recording.
+
+The device is a setting of the grid spec, not of the code. Putting REGF2 or REGF3 in a grid takes four things: its recording variables (P, Q and the limiters that must not bind) in `DEVICE_RECORDING_VARIABLES` in `build_test_grids.py`, its voltage-setpoint variable in `VOLTAGE_SETPOINT_VARIABLE` in the grid builder, a truth model in `scorer/truth/` (one module and one line in `TRUTH_SPEC_BUILDERS`), and its wrong versions in `score_wrong_models_on_grid.py`. Then the spec's `device_under_test` names it.
 
 ## Grid A: what the agent gets
 
@@ -41,7 +43,7 @@ Operating points. **op1** is the medium case's dispatch: the device at 700 MW, v
 
 Every train and val run that has an event also has light ambient variation (0.3% rms) underneath, as a live grid would. The two holdout runs are clean and never reach the agent. `config_min.json` scores them privately as a same-grid diagnostic (role `train_holdout`), so the gap between them and grid B shows how much the agent fit grid A rather than the device.
 
-`sandbox_data_clean/` is the same folder without measurement noise, for a noise-free baseline. `make_clean_sandbox.py` builds it from the `holdout/*_clean.csv` recordings without re-simulating, checks each one against its noisy twin (same time and setpoint columns, residual spread equal to the stated σ), and sets the noise levels in `dataset.json` to zero. Re-run it after `build_cases.py`. The harness picks it up with `--noise clean` (or `clean` as `run_batch.sh`'s fifth argument). Scoring doesn't change, because the held-out runs are clean either way.
+`sandbox_data_clean/` is the same folder without measurement noise, for a noise-free baseline. `make_noise_free_sandbox.py` builds it from the `holdout/*_clean.csv` recordings without re-simulating, checks each one against its noisy twin (same time and setpoint columns, residual spread equal to the stated σ), and sets the noise levels in `dataset.json` to zero. Re-run it after `build_test_grids.py`. The solver gets it with `--noise clean` (or `clean` as the fifth argument of `solver/run_solver_batch.sh`). Scoring doesn't change, because the held-out runs are clean either way.
 
 ## Grid B: the selection grid
 
@@ -113,7 +115,7 @@ Score of deliberately wrong versions of the true device (composite; flat = 1, tr
 | Tpm × 2 | 0.162 | 0.188 |
 | KPv × 0.7 | 0.53 (B_line at the cap) | 1.04 (M_vref and M_line at the cap, M_load's Q too) |
 
-On the P side, droop, filter and current-loop errors cost M almost exactly what they cost B, run for run. M's Q channel charges more for the same errors because M's Q swings are smaller (the TD divides by them), which puts the composite 15 to 25% higher. The one real difference is the voltage-loop gain. M's 0.9 Hz mode is less damped than B's (0.056 against B's 0.098 for its 0.89 Hz mode), so a 30% low KPv saturates two of M's runs where it saturates one of B's. Grid A's held-out runs saturate as well (1.13), so it is B that forgives this error, not M that is extreme. For a monitor that is useful: a B-tuned harness that drifts toward a wrong voltage-loop gain would pass B and show up on M. Per-run numbers are in `monitor_check.json` (`python check_grid.py M` regenerates it). How the 22 calibration runs score on M is in `../experiments/monitor_grid/results.md`.
+On the P side, droop, filter and current-loop errors cost M almost exactly what they cost B, run for run. M's Q channel charges more for the same errors because M's Q swings are smaller (the TD divides by them), which puts the composite 15 to 25% higher. The one real difference is the voltage-loop gain. M's 0.9 Hz mode is less damped than B's (0.056 against B's 0.098 for its 0.89 Hz mode), so a 30% low KPv saturates two of M's runs where it saturates one of B's. Grid A's held-out runs saturate as well (1.13), so it is B that forgives this error, not M that is extreme. For a monitor that is useful: a B-tuned harness that drifts toward a wrong voltage-loop gain would pass B and show up on M. Per-run numbers are in `monitor_check.json` (`score_wrong_models_on_grid.py M` regenerates it). How the 22 calibration runs score on M is in `../experiments/monitor_grid/results.md`.
 
 ## Limits worth knowing
 

@@ -1,99 +1,123 @@
 # RSI loop
 
-The recursive self-improvement loop for `harness_v0`. An updater model reads how the current harness did and proposes one change, fresh solver runs decide whether the change stays, and the loop repeats. It is built in six steps (plan of Oct 17). Step 1, the runner changes and the hidden monitor grid M, lives in `harness_v0/`, `scorer/` and `test_cases/`. Step 2 is the updater's instructions and the code that assembles everything it sees. Step 3 is one updater call that turns the current harness into a checked candidate. Step 4 is the loop, `run_rsi.py`, which starts clean from harness_v0 and iterates. Steps 5 and 6 (a calibration pool for the accept rule, the long run) come next.
+The recursive self-improvement loop for the solver's harness. An updater model reads how the current harness did and proposes one change, fresh solver runs of the candidate and of the current harness, side by side, decide whether the change stays, and the loop repeats. Haiku 5.5 at low effort is both the solver and the updater unless you say otherwise.
 
 | file | what it is |
 |---|---|
-| `updater_prompt.md` | the updater's instructions, with placeholders that `context.py` fills |
-| `context.py` | builds the updater's system prompt, its one user message and its three tools from a set of runs, the harness folder they used and the history of earlier attempts |
-| `test_context.py` | 25 checks on temporary copies of the Oct 13 batch: both scopes, history rendering, scrubbing, every leak check, the budget reductions, and that caches and dotfiles stay out of part 1 and out of the harness hash |
-| `propose.py` | one updater call: builds the context, lets the updater edit a copy of the harness, checks the result and writes a candidate folder |
-| `test_propose.py` | 29 checks with a scripted fake updater (no API call): refused paths, every check, every status, cost |
-| `run_rsi.py` | the loop: fresh baseline runs of harness_v0, then propose, fresh solver runs, keep or reject, for --iters iterations; `--resume` carries on an interrupted experiment |
-| `test_rsi.py` | 31 end-to-end checks with a fake updater and a fake solver (re-stamped Oct 13 runs), including a crash during confirmation runs, a crash mid-proposal, both resumes, the cycle record, confirmation on the new runs alone and the CAD budget flags |
-| `previews/oct13_clean/` | the context built from the Oct 13 clean batch: `context.md` (readable, with the diagram as a placeholder line) and `stats.json` |
+| `rsi_experiment.py` | the loop: a baseline of the starting harness, then propose, a test block, a confirmation block, keep or not, for `--iters` iterations; `--resume` carries on an interrupted experiment |
+| `harness_proposal.py` | one updater call: builds the context, lets the updater edit a copy of the harness, checks the result and writes a candidate folder |
+| `updater_context.py` | builds the updater's system prompt, its one user message and its three tools from a set of runs, the harness they used and the history of earlier attempts |
+| `updater_prompt.md` | the updater's instructions, with placeholders that `updater_context.py` fills |
+| `tests/test_rsi_experiment.py` | 45 end-to-end checks with a fake updater and a fake solver (re-stamped Oct 13 runs): the accept rule, early rejection, confirmation, crashes and resumes, failed runs resumed and replaced, runs left going by a killed loop, the cycle record, spend and the command line |
+| `tests/test_harness_proposal.py` | 33 checks with a scripted fake updater (no API call): refused paths, every check and warning, every status, the self-test, cost |
+| `tests/test_updater_context.py` | 29 checks: both scopes, history rendering, scrubbing, every leak check, the budget reductions, and that the Oct 13 context is unchanged by the rewrite apart from the parser |
+| `tests/fixtures/` | the ten Oct 13 clean runs and the harness that made them (fingerprint f141be203a8a40f4), so the tests never depend on `harness_v0/runs` |
+| `previews/oct13_clean/` | the context built from the Oct 13 clean batch in `tests/fixtures/`: `context.md` (readable, with the diagram as a placeholder line) and `stats.json` |
 
-## Building a context
+Commands below run from `Harness_testing/` with the project's Python (on the Mac, `PY=../.venv/bin/python`). The tests need no API key, no Docker and no ANDES: `$PY rsi/tests/test_rsi_experiment.py` and the other two.
 
-```bash
-PY=../../.venv/bin/python
-$PY context.py --runs ../harness_v0/runs/batch_20261013_095747_m1e1_clean --harness ../harness_v0/harness --out previews/oct13_clean
-$PY context.py ... --scope all               # edit-anything scope: system.md becomes editable and the device-generic rule goes
-$PY context.py ... --history history.jsonl   # with earlier attempts
-$PY context.py ... --count-tokens            # exact count from the API, free, needs ANTHROPIC_API_KEY
-```
-
-`--runs` takes run folders or batch folders, and the table shows the newest 20 (`--last`). The build stops if any of those runs was made with a different harness than `--harness`, comparing the hash in each `meta.json` with the folder's hash computed by `run_harness.py`'s own function, or if they mix models, efforts or noise settings. It warns if a run got a different task prompt than today's `prompt.md`. `context.py` needs only the standard library (`anthropic` only for `--count-tokens`). It reads the noise sentences, the solver's tool, the output limit, the budget and the hash function from `run_harness.py`, and the forbidden-name list from `build_cases.py`, so none of them can drift apart.
-
-From the loop:
-
-```python
-from context import build
-ctx = build(run_dirs, harness_dir, scope="tools", history=records)
-client.messages.create(model="claude-haiku-5-5", system=ctx.system, tools=ctx.tools,
-                       messages=[{"role": "user", "content": ctx.content}], ...)
-```
-
-`ctx.tools` holds `write_file`, `delete_file` and `finish`. The loop will apply the writes to a copy of the current harness, refuse paths outside the scope's editable files, and stop at `finish`, whose fields are the manifest (evidence, root cause, change, predicted effect, what is at risk).
-
-## Running the loop (step 4)
+## Running the loop
 
 ```bash
-$PY run_rsi.py --iters 5 --reps 4 --parallel 2       # smoke test
-$PY run_rsi.py --iters 30 --reps 10 --confirm 10 --parallel 4 --patience 10
+$PY rsi/rsi_experiment.py --iters 2 --baseline-runs 4 --pairs 4 --early-stop-pairs 2 --confirm-pairs 4   # smoke test
+$PY rsi/rsi_experiment.py --iters 30                                                                    # the real thing
 ```
 
-Nothing from earlier batches is used. The loop copies harness_v0 to `candidates/h000`, makes `--baseline-reps` fresh runs of it (default `--reps`), and the first updater sees only those. Each iteration then calls `propose.py` on the current harness's runs and the history, runs the candidate `--reps` times with `run_harness.py` (scored with `config_rsi.json`, so grid M is scored too), and keeps it if its mean composite on grid B is lower by a one-sided permutation test at `--alpha` (0.10) against all of the current harness's runs. With `--confirm N` a kept candidate gets N more runs and is tested again on those N runs alone against the current harness's runs, and reverted if they don't pass. Testing only the new runs keeps the second test independent of the first, so a lucky first block can't carry a candidate through; the record's numbers for an accepted or reverted candidate are the confirmation test's, and the first pass is kept in `first_pass` (never shown to the updater). A candidate that fails `propose.py`'s checks is never run and counts as a miss. It stops at `--iters`, after `--patience` misses in a row (10), or past `--max-cad` (20). Budgets are in CAD, the account's billing currency; the script's spend count uses the same per-token figures as the Console. `--max-usd` and `--updater-max-usd` still work as the old names for the same settings.
+It needs `ANTHROPIC_API_KEY` and Docker with the solver's image (`harness-v0-py`, built from `solver/Dockerfile`). The loop copies the starting harness (`--start`, default `harness_v0/harness`) to `candidates/h000` and makes `--baseline-runs` (20) runs of it, so the first updater has something to read. Each iteration then goes like this.
 
-The smallest p a permutation test can give is 1/C(n_candidate + n_current, n_candidate): 1/6 for 2 runs against 2, 1/20 for 3 against 3, 1/70 for 4 against 4. So below 3 runs a side nothing can be kept at α = 0.10, and the loop warns if that's the case.
+1. Propose. `harness_proposal.py` shows the updater the newest `--newest-runs` (20) runs of the current harness, from every block it has run in, and the history of earlier attempts. It edits a copy, and a copy that fails a check is never run.
+2. Test block. Pairs of fresh runs, one of the candidate and one of the current harness in each pair, started together; which one starts first alternates. After `--early-stop-pairs` (8) pairs, a candidate whose mean composite on grid B is not below the current harness's is rejected early. Otherwise, after `--pairs` (20) pairs, it passes if its mean is lower and a one-sided permutation test on this block's 20 + 20 runs gives p ≤ `--alpha` (0.10).
+3. Confirmation block. A candidate that passed gets `--confirm-pairs` (20) new pairs, run and judged the same way, the early stop included, on their own. Passing both makes it the current harness; failing this one reverts it.
+4. Stop after `--iters` iterations, after `--patience` (20) attempts in a row that were not kept, or once `--max-usd` (20) has been spent, checked before each iteration. Budgets are in USD, the currency of the per-token prices in `common/api_pricing.py`.
 
-Everything goes in `experiments/<date>_<time>/` (or `--out`): `candidates/hNNN/` (each proposal, with its harness), `runs/hNNN/` (each harness's solver runs), `history.jsonl` (what later updaters see), `state.json` and `loop.log`. `monitor.jsonl` and `summary.md` are for you only: they put grid M and grid A's held-out runs beside grid B for every block, with the M - B gap, and nothing reads them back into the loop. `cycles.jsonl` is also yours only. For every candidate it lists the earlier harnesses (other than its parent) it returns to: the same whole harness by hash, or the same content for a file it changed, with trailing whitespace and blank lines ignored. A match with a rejected candidate is a repeated proposal; a match with h000 or an older kept harness is a step back. summary.md shows the matches in its `repeats` column.
+Each block compares the candidate with runs of the current harness made in the same block, not with older runs. Over the days a loop takes, the solver's behavior can drift (API changes, load, a new Docker image), and a candidate measured against last week's runs would be credited or blamed for the drift. Every block also gives the current harness new runs, so each updater reads fresh evidence rather than the same 20 transcripts. Because the two blocks share no runs, a candidate no better than the current harness passes both with probability α² (1% at 0.10). The early stop can only reject, so it cannot raise that.
 
-### Resuming
+What the rule can detect, from resampling the ten Oct 13 composites (mean 0.884, SD 0.433) and a normal approximation to the permutation test, so take the numbers as rough:
+
+| true improvement in composite | passes the test block | kept | rejected early | runs per iteration on average |
+|---|---|---|---|---|
+| none | 10% | 0.8% | 49% | 31 |
+| 10% | 26% | 7% | 33% | 41 |
+| 20% | 55% | 31% | 17% | 56 |
+| 30% | 84% | 71% | 6% | 71 |
+| 40% | 97% | 95% | 2% | 78 |
+
+So a rejection means "not shown to be better", not "no better": a candidate that is truly 20% better is kept about a third of the time. At about $0.017 a Haiku-low run, an early rejection costs about $0.30, a full rejection about $0.70 and a kept or reverted candidate about $1.35, plus a few cents for the updater. The baseline is about $0.35.
+
+The smallest p a block can give is 1/C(2n, n) for n pairs: 1/6 for 2, 1/20 for 3, 1/70 for 4. Below 3 pairs nothing can pass at α = 0.10, and the loop warns. Use an even `--parallel` (default 2) so the two runs of a pair run at the same time; `--workers` sets the ANDES simulations at once inside each run's scoring.
+
+### Failed runs and resuming
+
+A run that ends with a failure score (an invalid submission, a model that fails in simulation) is a result and counts. A run that stops for a reason outside the harness is not: an API outage longer than the 35 minutes `solver/solver_run.py` rides out, Docker failing, the scorer itself crashing. The loop resumes such a run from its checkpoint until it has failed more than `--max-resumes` (2) times, then replaces it with a new run for the same pair; the abandoned run's spend still counts. A conversation that outgrows the model's context window ends the run like a final message without a json block (the sandbox's `submission.json` is scored, or it scores 2), since that is the harness's doing. After `--max-failures-in-a-row` (6) failed sessions with no run finishing in between, or when Docker cannot run the candidate's checker, the loop stops with exit code 3 so you can fix the cause.
 
 ```bash
-$PY run_rsi.py --resume experiments/20261020_210000                # carry on where it stopped
-$PY run_rsi.py --resume experiments/20261020_210000 --iters 40     # extend a finished run
+$PY rsi/rsi_experiment.py --resume rsi/experiments/20261022_090000               # carry on where it stopped
+$PY rsi/rsi_experiment.py --resume rsi/experiments/20261022_090000 --iters 40    # extend a finished experiment
 ```
 
-`history.jsonl` is the record of finished iterations, and a line is written there last, so everything else is rebuilt from it and from the run folders. An interrupted iteration picks up where it stopped. A saved `proposal.json` is reused rather than paid for again. Scored runs are kept and only the missing ones are run. The keep test uses the candidate's first `--reps` runs, so a crash during confirmation runs reaches the same decision as an uninterrupted loop. A proposal cut off before `proposal.json` was written is moved to `candidates/hNNN.interrupted_<time>` and made again; its updater cost (usually about $0.13, at most `--updater-max-cad`) is the one thing not counted. Spend is recomputed from every `meta.json` and `proposal.json` each iteration, so `--max-cad` holds across resumes. `--resume` accepts only `--iters`, `--patience`, `--max-cad`, `--parallel`, `--workers` and `--updater-max-cad`; anything else would change the experiment, and `config.json` records each resume and what it changed.
+Everything is on disk, and a resumed loop decides exactly what an uninterrupted one would. `history.jsonl` is the record of finished iterations, and its line for an iteration is written last. A saved `proposal.json` is reused rather than paid for again. Scored runs are kept, crashed and stopped runs are resumed, and runs still going from a loop that was killed are waited for (the loop checks that the pid in `meta.json` is still a `solver_run.py` process on that run). Decisions use fixed pairs, the first `--early-stop-pairs` and then all `--pairs`, so it does not matter which runs finished first. A proposal cut off before `proposal.json` was written is moved to `candidates/hNNN.interrupted_<time>` and made again, and its updater spend, from its `transcript.json`, still counts. Spend is recomputed from every run's `meta.json` and every proposal each time, so `--max-usd` holds across resumes. `--resume` accepts only `--iters`, `--patience`, `--max-usd`, `--parallel`, `--workers`, `--updater-max-usd` and `--max-resumes`; anything else would change the experiment, and `config.json` records each resume and what it changed.
 
-`loop.lock` holds the running loop's pid, and a second loop on the same machine refuses the folder. After a reboot a stale lock is ignored unless the old pid now belongs to a live process; if the loop refuses a folder you know is idle, delete `loop.lock`. Stopping the loop (Ctrl-C, `kill`, closing its terminal) stops its solver runs as well, so a resumed loop never shares a folder with orphaned runs. The updater client retries API errors 6 times before the loop gives up.
+`loop.lock` holds the running loop's pid, and a second loop refuses the folder while that pid is a live `rsi_experiment.py` process. Stopping the loop (Ctrl-C, `kill`, closing its terminal) stops its solver runs too: each runs in its own session, and the loop sends them SIGTERM, which `solver_run.py` records as `stopped` before it saves and exits.
 
-For a run that should survive crashes while you're away, run it inside tmux (WSL on the desktop) with a retry loop. The loop exits 0 when it finishes or stops on patience or budget, and non-zero when it crashes, so only a crash leads to a resume (up to 5, five minutes apart):
+For a run that should carry on while you're away, use tmux on the desktop (in WSL) with a retry loop. The loop exits 0 when it finishes or stops on patience or budget, 3 when it stops on failed runs, and something else when it crashes; any non-zero exit leads to a resume, up to five, ten minutes apart:
 
 ```bash
-EXP=experiments/long1
-$PY run_rsi.py --iters 30 --reps 10 --confirm 10 --parallel 4 --workers 4 --patience 10 --out $EXP || \
-  for i in 1 2 3 4 5; do sleep 300; $PY run_rsi.py --resume $EXP && break; done
+EXP=rsi/experiments/long1
+$PY rsi/rsi_experiment.py --iters 40 --parallel 4 --workers 4 --out $EXP || \
+  for i in 1 2 3 4 5; do sleep 600; $PY rsi/rsi_experiment.py --resume $EXP && break; done
 ```
 
-A machine reboot (Windows Update) kills tmux too, so after one, open WSL, start Docker Desktop and run the `--resume` line by hand.
+A machine reboot (Windows Update) ends tmux too, so after one, open WSL, start Docker Desktop and run the `--resume` line by hand. On a Mac, start the loop under `caffeinate -i` so the machine doesn't sleep.
 
-## Proposing a candidate (step 3)
+### What the experiment folder holds
+
+Everything goes in `rsi/experiments/<date>_<time>/` (or `--out`).
+
+| path | what it is |
+|---|---|
+| `candidates/h000/harness` | the starting harness; `candidates/hNNN/` holds each proposal, with its harness |
+| `runs/<block>/<run tag>/` | solver runs. Blocks are `h000_baseline`, `hNNN_test` and `hNNN_confirm`; each run's `meta.json` labels give its block, pair, arm (candidate or current) and harness |
+| `runs/<block>/logs/` | the solver's output for each pair and arm |
+| `history.jsonl` | what later updaters see about each attempt |
+| `blocks.jsonl` | every block's numbers, the test block's included for a candidate that went on to confirmation |
+| `monitor.jsonl`, `summary.md` | for you only: grid M (the hidden monitor) and grid A's held-out runs beside grid B for both arms of every block, with the M - B gap. The over-optimization signal is the candidate's gap rising while its B improves, and the current harness's B from block to block shows drift |
+| `cycles.jsonl` | for you only: for every candidate, the earlier harnesses (other than its parent) it returns to, the whole harness by fingerprint or a file it changed by content (trailing whitespace and blank lines ignored). A match with a rejected candidate is a repeated proposal; a match with h000 or an older kept harness is a step back. `summary.md` shows them in its repeats column |
+| `config.json`, `state.json`, `loop.log`, `loop.lock` | settings and resumes, where the loop stands, its log, and the lock while it runs |
+
+Nothing reads `monitor.jsonl`, `cycles.jsonl` or `summary.md` back into the loop.
+
+## Proposing a candidate by hand
 
 ```bash
-$PY propose.py --runs ../harness_v0/runs/batch_20261013_095747_m1e1_clean ../harness_v0/runs/batch_20261017_153512_m1e1_clean \
-               --harness ../harness_v0/harness --out candidates/h001
+$PY rsi/harness_proposal.py --runs runs/batch_20261022_101500_haiku_low_clean --harness harness_v0/harness --out rsi/candidates/h002
 ```
 
-It needs `ANTHROPIC_API_KEY`, and Docker with the solver's image (`harness-v0-py`) for the smoke run. The updater is Haiku 5.5 at high effort unless `--model` and `--effort` say otherwise, stops after 20 turns (`--max-turns`) or $2 (`--max-usd`), and is priced with `run_harness.py`'s own rates. Its edits go into a copy of the harness. Paths outside the scope's editable files are refused and the refusal goes back to it as a tool error, as does a `finish` before any edit or with an empty manifest field. If it stops without calling `finish`, it gets one reminder.
+It needs `ANTHROPIC_API_KEY`, and Docker with the solver's image for the smoke run. The updater is Haiku 5.5 at low effort unless `--model` and `--effort` say otherwise, stops after 20 turns (`--max-turns`) or $2 (`--max-usd`), and is priced with `common/api_pricing.py`. Its edits go into a copy of the harness. Paths outside the scope's editable files are refused and the refusal goes back to it as a tool error, as does a `finish` before any edit or with a missing manifest field (and a `finish` that packs its fields into one string as tags is told so). If it stops without calling `finish`, it gets one reminder.
 
-`--out` gets `harness/` (the candidate, ready for `run_harness.py --harness`), `proposal.json`, `diff.patch`, `transcript.json`, and the `context.md` and `context_stats.json` it was given. The manifest lives in `proposal.json`, outside `harness/`, so it doesn't change the candidate's hash. `status` is `ok` only if the candidate passes every check before any solver run:
+`--out` gets `harness/` (the candidate, ready for `solver/solver_run.py --harness`), `proposal.json`, `diff.patch`, `transcript.json`, and the `context.md` and `context_stats.json` it was given. The manifest lives in `proposal.json`, outside `harness/`, so it doesn't change the candidate's fingerprint. `status` is `ok` only if the candidate passes every check before any solver run.
 
-- every `.py` in `tools/` compiles, `method.md` is there and not empty, no forbidden device name appears anywhere, and in the tools scope `system.md` is unchanged;
-- `tools/check_submission.py` still imports `symbolic`, directly or through another tool;
-- a smoke run in the solver's Docker image: the best submission among the runs must pass the candidate's checker on a validation file within 120 s, and an empty submission must be rejected.
+- Every `.py` in `tools/` compiles, `method.md` is there and not empty, no forbidden device name appears anywhere, and in the tools scope `system.md` is unchanged.
+- `tools/check_submission.py` still imports `submission_parser`, directly or through another tool. `tools/submission_parser.py` itself is locked, since the scorer's own copy replaces it in every run.
+- A smoke run in the solver's Docker image: the best submission among the runs must pass the candidate's checker on a validation file within 120 s, and an empty submission must be rejected.
 
-The other statuses are `invalid` (a check failed), `no_change`, `no_finish` and `over_budget`. Some things only warn, because a reviewer should look at them but they don't break a run: a new tool that `method.md` never names or that has no docstring, and numbers added to `method.md` that are in neither the parent nor the task prompt (a possible fitted value, the device-specific leak the tools scope forbids). Before a `finish` is accepted, the updater gets one self-test round: the candidate's checker on the best and worst runs' submissions, run the way the solver runs it, after which it has to call `finish` again (h001's screen called the best Oct 13 model unstable, and its updater never ran the tool). `--no-self-test` skips this. `--smoke local --smoke-python PATH` runs the smoke check without Docker, and `--smoke off` skips it.
+The other statuses are `invalid` (a check failed), `no_change`, `no_finish` and `over_budget`. Some things only warn, because a reviewer should look at them but they don't break a run: a new tool that `method.md` never names or that has no docstring, numbers added to `method.md` that are in neither the parent nor the task prompt, and numbers with three or more significant digits added to a tool that appear nowhere in the parent harness or the task prompt. The last two are possible fitted values, the device-specific leak the tools scope forbids. Before a `finish` is accepted, the updater gets one self-test round: the candidate's checker on the best and the worst runs' submissions, run the way the solver runs it, after which it has to call `finish` again. `--no-self-test` skips this. `--smoke local --smoke-python PATH` runs the smoke check without Docker, and `--smoke off` skips it.
 
-`python test_propose.py --smoke-python ../../.venv/bin/python` runs the fake-updater checks.
+## Building a context by hand
+
+```bash
+$PY rsi/updater_context.py --runs rsi/tests/fixtures/oct13_clean_batch --harness rsi/tests/fixtures/harness_v0_oct13 --out rsi/previews/oct13_clean
+$PY rsi/updater_context.py ... --scope all               # edit-anything scope: system.md becomes editable and the device-generic rule goes
+$PY rsi/updater_context.py ... --history history.jsonl   # with earlier attempts
+$PY rsi/updater_context.py ... --count-tokens            # exact count from the API, free, needs ANTHROPIC_API_KEY
+```
+
+`--runs` takes run folders or batch folders, and the table shows the newest 20 (`--last`). Runs that did not finish (still going, crashed or stopped) are left out, since they say nothing about the harness. The build stops if any run was made with a different harness than `--harness` (it compares the fingerprint in each `meta.json` with the folder's, computed by `common/harness_files.py`), or if the runs mix models, efforts or noise settings. It warns if a run got a different task prompt than today's `solver/task_prompt.md`. It needs only the standard library (`anthropic` only for `--count-tokens`), and it reads the noise sentences, the solver's tool, the output limit and the budget from `solver/solver_run.py` and the forbidden names from `common/hidden_names.py`, so none of them can drift apart.
 
 ## What the updater sees
 
-The system prompt is `updater_prompt.md` filled in with the solver's model and effort, the files the scope lets it edit, the device-generic rule (tools scope only) and the range of the current harness's composites. The user message is the system diagram followed by three text blocks.
+The system prompt is `updater_prompt.md` filled in with the solver's model and effort, the files the scope lets it edit, the device-generic rule (tools scope only), the solver's limits and the range of the current harness's composites. The user message is the system diagram followed by three text blocks.
 
-Part 1 is what the solver is given: the task prompt with its noise sentence, `system.md`, `method.md`, every file in `tools/`, `symbolic.py` marked locked, the `run_python` tool with its limits, `runs.json` and `dataset.json`. These are the files the next solver run will get.
+Part 1 is what the solver is given: the task prompt with its noise sentence, `system.md`, `method.md`, every file in `tools/`, `submission_parser.py` marked locked, the `run_python` tool with its limits, `runs.json` and `dataset.json`. These are the files the next solver run will get.
 
 Part 2 is how the current harness did. It opens with the composite's mean, median, SD and range, failure counts by held-out disturbance and the share of tool calls cut off at 120 s. Then comes a table with one row per run (composite, TD, P / Q TD for each held-out disturbance or "failed", steps, tool calls, timeouts, cost and budget stop), a plain-language note for each failure, and the mean TD where each disturbance didn't fail. After that come every run's final message and the transcripts of the best and the worst run, with each tool output cut to its first and last 1000 characters. The solver's thinking blocks are empty in all ten Oct 13 runs, so the transcripts show its text, code and outputs only.
 
@@ -101,40 +125,41 @@ Part 3 is the earlier attempts, from `history.jsonl`.
 
 ## What never goes in
 
-From `score/public.json` the build reads only `score`, `td`, `td_runs` and `failures`. FR, PAR and their entries sit in the same file but are never read. From `meta.json` it reads only `tag`, `model`, `effort`, `harness_sha`, `spent_usd`, `steps`, `tool_calls`, `tool_timeouts`, `budget_stop`, `submission_source` and `noise`, never `components`, `role_scores` or `score_selection`. It never opens `private.json`. Scorer failure details become plain notes ("B_line: the grid simulation failed at t = 2.28 s"), so tracebacks and simulator messages don't reach the updater.
+From `score/public.json` the build reads only `score`, `td`, `td_runs` and `failures`. FR, PAR and their entries sit in the same file but are never read. From `meta.json` it reads only `tag`, `model`, `effort`, `harness_sha`, `spent_usd`, `steps`, `tool_calls`, `tool_timeouts`, `budget_stop`, `submission_source` and `noise`, plus `status` to leave out unfinished runs, never `components`, `role_scores` or `score_selection`. It never opens `private.json`. Scorer failure details become plain notes ("B_line: the grid simulation failed at t = 2.28 s"), so tracebacks and simulator messages don't reach the updater.
 
-Two checks back this up. Text the build generates itself (the filled prompt, part 1, the run table and the fields the loop writes into the history) stops the build with a `LeakError` if it contains a hidden name. Those are the FR and PAR field names, fields only `private.json` has, and every grid that isn't a selection grid together with its held-out runs, read from `config_rsi.json` (`grid_M`, `M_vref`, `M_load`, `M_line`, `grid_A`, `A_test_line_op1`, `A_test_vref_op1`). Text the solver or an earlier updater wrote has the forbidden device names replaced with "[name removed]", and `stats.json` counts them. A coincidental hidden name in solver text, such as a variable called `M_load`, is left alone, since the solver can't know the real ones. The Oct 13 preview has no hidden or forbidden name anywhere in it.
+Two checks back this up. Text the build generates itself (the filled prompt, part 1, the run table and the fields the loop writes into the history) stops the build with a `LeakError` if it contains a hidden name. Those are the FR and PAR field names, fields only `private.json` has, and every grid that isn't a selection grid together with its held-out runs, read from `scorer/config_rsi.json` (`grid_M`, `M_vref`, `M_load`, `M_line`, `grid_A`, `A_test_line_op1`, `A_test_vref_op1`). Text the solver or an earlier updater wrote has the forbidden device names replaced with "[name removed]", and `stats.json` counts them. A coincidental hidden name in solver text, such as a variable called `M_load`, is left alone, since the solver can't know the real ones.
 
 One leak is built into the Oct 17 decision. Because the composite and TD are both shown, anyone who knows the weights can compute $\text{composite} - 0.5\,TD = 0.3\,FR + 0.2\,PAR$ for every run. The updater isn't told the weights, but the task prompt in part 1 says the two linearization checks exist, and with 20 runs it could regress the composite on TD and see how much else moves the score. Hiding this would mean showing TD alone, which drops the number the accept rule actually uses.
 
 ## The history file
 
-`history.jsonl` holds one JSON object per attempt, oldest first. The loop (step 4) writes it and `context.py` renders it.
+`history.jsonl` holds one JSON object per attempt, oldest first. `rsi_experiment.py` writes it and `updater_context.py` renders it.
 
 | field | written by | meaning |
 |---|---|---|
 | `iteration`, `candidate`, `parent` | loop | attempt number, the candidate's folder name, and the harness it was made from |
-| `outcome` | loop | `accepted`, `rejected`, `rejected_early`, `reverted`, `invalid` or `repeat` |
+| `outcome` | loop | `accepted`, `rejected`, `rejected_early`, `reverted` or `invalid` |
 | `files_changed` | loop | the paths the attempt wrote or deleted |
 | `root_cause`, `change`, `predicted_effect`, `at_risk` | updater | from its `finish` call; `evidence` is left out because it cites runs the next updater won't see |
-| `n_candidate`, `n_incumbent`, `mean_candidate`, `mean_incumbent`, `se_diff`, `p_value` | loop | the selection-grid composites behind the decision |
-| `td_candidate`, `td_incumbent` | loop | mean TD by held-out disturbance, `{"B_vref": {"P": .., "Q": ..}, ...}` |
-| `fail_rate_candidate`, `fail_rate_incumbent` | loop | the share of runs in which each disturbance failed |
-| `note` | loop | anything else, such as why a candidate was invalid |
+| `n_candidate`, `n_current`, `mean_candidate`, `mean_current`, `se_difference`, `p_value` | loop | the selection-grid composites behind the decision: the confirmation block's for an accepted or reverted candidate, the test block's (its first pairs, if it stopped early) otherwise |
+| `td_candidate`, `td_current` | loop | mean TD by held-out disturbance, `{"B_vref": {"P": .., "Q": ..}, ...}` |
+| `fail_rate_candidate`, `fail_rate_current` | loop | the share of runs in which each disturbance failed |
+| `note` | loop | why a candidate was never run |
 | `diff_excerpt` | loop | the diff against the parent, of which the first 1500 characters are shown |
 
-Only selection-grid numbers may go into the loop's fields. The build scans them for hidden names, but it can't tell whether a mean came from the right grid, so the loop's own code has to get that right.
+A kept candidate's test-block numbers stay out of the history (they are in `blocks.jsonl`). They are the numbers that got it selected, so they flatter it; the confirmation block's are an honest estimate. Only selection-grid numbers may go into the loop's fields. The build scans them for hidden names, but it can't tell whether a mean came from the right grid, so the loop's own code has to get that right.
 
 ## Size
 
-The Oct 13 preview comes to an estimated 50.8k input tokens: 2.0k for the instructions, 13.4k for part 1, 33.4k for part 2 (11.0k of it the final messages and 21.4k the two transcripts) and 2.0k for the diagram. The estimate assumes 2.5 characters a token, which is deliberately high. English prose runs near 3.5 on earlier Claude tokenizers, code and tables of numbers run denser, and Claude 4.7 and later models use a tokenizer that can give up to about 35% more tokens for the same text. The diagram's 2040 comes from the vision docs' patch count for Claude 4.7 and later, $\lceil 1898/28 \rceil \times \lceil 814/28 \rceil = 68 \times 30$. One `--count-tokens` call on the Mac gives the exact count and the ratio to put in `CHARS_PER_TOKEN`. The counting endpoint is free but rate-limited.
+The Oct 13 preview comes to an estimated 54.3k input tokens: 2.0k for the instructions, 16.9k for part 1 (the parser alone is about 8k), 33.4k for part 2 (11.0k of it the final messages and 21.4k the two transcripts) and 2.0k for the diagram. The estimate assumes 2.5 characters a token, which is deliberately high. English prose runs near 3.5 on earlier Claude tokenizers, code and tables of numbers run denser, and Claude 4.7 and later models use a tokenizer that can give up to about 35% more tokens for the same text. The diagram's 2040 comes from the vision docs' patch count for Claude 4.7 and later, $\lceil 1898/28 \rceil \times \lceil 814/28 \rceil = 68 \times 30$. One `--count-tokens` call gives the exact count and the ratio to put in `CHARS_PER_TOKEN`. The counting endpoint is free but rate-limited.
 
-The loop will show 20 runs, so the final messages roughly double, and each attempt adds about 1.1k characters to the history, or 2.7k with a full diff. With 20 runs the fixed part comes to about 62k, so the history fills the 80k budget after roughly 15 attempts with diffs. From then on reductions apply, cheapest first: tool outputs cut to 1000 characters, then 500; only the worst run's transcript; only the last 10, then 5 attempts in full, the older ones as one line each; only the last 10 runs' final messages. `stats.json` lists the ones that applied. The 80k sits under the 100k-token line past which Haiku 5.5 bills the whole request at five times the rate (see `rates()` in `run_harness.py`), with room for the updater's own `write_file` calls. At these prices that costs under a cent a call either way, so the budget is really about how much a small model can attend to.
+The loop shows 20 runs, so the final messages roughly double, and each attempt adds about 1.1k characters to the history, or 2.7k with a full diff. With 20 runs the fixed part comes to about 66k, so the history fills the 80k budget after roughly 13 attempts with diffs. From then on reductions apply, cheapest first: tool outputs cut to 1000 characters, then 500; only the worst run's transcript; only the last 10, then 5 attempts in full, the older ones as one line each; only the last 10 runs' final messages. `stats.json` lists the ones that applied. The 80k sits under the 100k-token line past which Haiku 5.5 bills the whole request at five times the rate (see `common/api_pricing.py`), with room for the updater's own `write_file` calls. At these prices that costs under a cent a call either way, so the budget is really about how much a small model can attend to.
 
 ## Open questions
 
 1. `CHARS_PER_TOKEN` is a guess until the first `--count-tokens` call.
 2. Whether the best run's transcript is worth its space. It shows the updater what to keep, but late in the loop it is the first full section to go. I don't know which of the two the updater uses more.
 3. At 20 runs the final messages become the largest block, about 22k tokens, more than the two transcripts together. A run's final message averages 2.8k characters, of which the submission JSON is only about 600, so the bulk is the solver's own account of its model. They are the only place the updater sees every run's submitted structure, which it needs to group failures, so they go last. Whether the last 10 would serve as well as all 20, I don't know.
+4. The detection table above resamples only ten runs and approximates the permutation test; the first real baseline (20 runs) gives a better spread to redo it with.
 
 Sources: [token counting](https://docs.claude.com/en/docs/build-with-claude/token-counting), [vision](https://docs.claude.com/en/docs/build-with-claude/vision).

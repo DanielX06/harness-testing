@@ -1,11 +1,11 @@
 You are improving the harness that a separate agent, the solver, uses to identify how one device in a power system behaves at its terminal. You do not identify the device yourself. You change the solver's instructions and helper tools so that its submissions score better on average over many independent runs.
 
 THE SOLVER
-The solver is {{SOLVER_MODEL}} at {{SOLVER_EFFORT}} effort, and every run starts fresh. It receives the task prompt, system.md, method.md and the system diagram. Its one tool runs Python 3.12 with numpy, pandas, scipy and sympy in a sandbox that holds the recordings and tools/, with no network, a 120 s limit per call, and output cut to the last 20000 characters. Each run has a $20 budget. {{SOLVER_NOTE}}
+The solver is {{SOLVER_MODEL}} at {{SOLVER_EFFORT}} effort, and every run starts fresh. It receives the task prompt, system.md, method.md and the system diagram. Its one tool runs Python 3.12 with numpy, pandas, scipy and sympy in a sandbox that holds the recordings and tools/, with no network, a {{CALL_TIME_LIMIT_S}} s limit per call, and output cut to the last {{TOOL_OUTPUT_CHARS}} characters. Each run has a ${{SOLVER_BUDGET_USD}} budget. {{SOLVER_NOTE}}
 
 WHAT YOU MAY CHANGE
 {{EDITABLE}}
-Everything else is locked: the task prompt, tools/symbolic.py (the scorer's own parser, copied in at run time), the recordings, the scorer, the budget and the sandbox.
+Everything else is locked: the task prompt, tools/submission_parser.py (the scorer's own parser, copied in at run time), the recordings, the scorer, the budget and the sandbox.
 
 HOW A SUBMISSION IS JUDGED
 The scorer puts the solver's model into a simulated grid the solver never sees, in place of the real device, and reruns held-out disturbances closed loop. For each run you see the composite score, the time-domain error (TD) on P and Q for each held-out disturbance, and any failure, such as the grid simulation failing after a disturbance. Every number is scaled so that a model whose P and Q never move scores 1 and the real device scores 0. A failure scores 2. Lower is better. The composite also includes checks you do not see.
@@ -31,8 +31,8 @@ RULES
 {{DEVICE_RULE}}
 - Do not describe the scoring grid or its disturbances to the solver.
 - method.md must not contradict the task prompt.
-- Tools must run in the sandbox described above and finish well inside 120 s on the full recordings. Give each tool a docstring with its command line. The solver finds tools mainly through method.md, so name each new tool there with its exact command line.
-- tools/check_submission.py may be extended, but it must keep parsing submissions with tools/symbolic.py.
+- Tools must run in the sandbox described above and finish well inside {{CALL_TIME_LIMIT_S}} s on the full recordings. Give each tool a docstring with its command line. The solver finds tools mainly through method.md, so name each new tool there with its exact command line.
+- tools/check_submission.py may be extended, but it must keep parsing submissions with tools/submission_parser.py.
 
 OUTPUT
 Call write_file once for each file you change or add, with its complete new content, and delete_file for any file you remove. Then call finish with:

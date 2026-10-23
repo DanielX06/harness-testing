@@ -6,8 +6,8 @@ Takes two batch submissions that crashed B_line and whose Q responds to V throug
 Everything else in each submission stays exactly as the agent wrote it. Each variant is scored on
 grid B with the real scorer, and the table at the end shows B_line pass/fail against the gain.
 
-    ../../../.venv/bin/python run_qv_gain.py              # all variants, about 1 min each
-    ../../../.venv/bin/python run_qv_gain.py --workers 3
+    python experiments/qv_gain/run_qv_gain.py              # all variants, about 1 min each
+    python experiments/qv_gain/run_qv_gain.py --workers 3
 
 Results: variants/<name>.json, scores/<name>/, results.md.
 Note: in both models the gain is static, so it sets the fast AND the steady-state dQ/dV together.
@@ -23,7 +23,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))             # Harness_testing
 BATCH = os.path.join(ROOT, "harness_v0", "runs", "batch_20261011_182645_m1e1")
-SCORE = os.path.join(ROOT, "scorer", "score.py")
+SCORE = os.path.join(ROOT, "scorer", "score_submission.py")
 CONFIG = os.path.join(HERE, "config_gridB.json")
 
 BASES = {  # run tag suffix -> (folder, param to scale, original value)

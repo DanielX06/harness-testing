@@ -1,7 +1,7 @@
 """Score finished harness runs on grid M (the hidden monitor) without re-running the agent.
 
-    python score_runs_on_M.py                            # every run under harness_v0/runs/batch_*
-    python score_runs_on_M.py ../../harness_v0/runs/batch_20261013_095747_m1e1_clean --workers 4
+    python experiments/monitor_grid/score_runs_on_M.py      # every run under harness_v0/runs/batch_* and runs/batch_*
+    python experiments/monitor_grid/score_runs_on_M.py harness_v0/runs/batch_20261013_095747_m1e1_clean --workers 4
 
 A submission is pure data, so scoring it on a grid added later gives exactly what config_rsi.json
 would have given at run time. Writes runs_on_M.json here (resumable: runs already in it are skipped)
@@ -17,19 +17,19 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))                     # Harness_testing
 SCORER = os.path.join(ROOT, "scorer")
-sys.path.insert(0, SCORER)
+sys.path.insert(0, ROOT)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("batches", nargs="*", help="batch folders (default: all of harness_v0/runs/batch_*)")
+    ap.add_argument("batches", nargs="*", help="batch folders (default: harness_v0/runs/batch_* and runs/batch_*)")
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--out", default=os.path.join(HERE, "runs_on_M.json"))
     a = ap.parse_args()
 
     import andes
     import numpy as np
-    from score import score_submission
+    from scorer.score_submission import SubmissionScorer
     andes.config_logger(stream_level=40)
 
     base = json.load(open(os.path.join(SCORER, "config_min.json")))
@@ -39,7 +39,9 @@ def main():
     cpath = os.path.join(tempfile.mkdtemp(prefix="on_M_"), "config.json")
     json.dump(cfg, open(cpath, "w"))
 
-    batches = a.batches or sorted(glob.glob(os.path.join(ROOT, "harness_v0", "runs", "batch_*")))
+    scorer = SubmissionScorer(cpath, worker_count=a.workers)
+    batches = a.batches or (sorted(glob.glob(os.path.join(ROOT, "harness_v0", "runs", "batch_*")))
+                            + sorted(glob.glob(os.path.join(ROOT, "runs", "batch_*"))))
     res = json.load(open(a.out)) if os.path.exists(a.out) else {}
     for b in batches:
         for run in sorted(glob.glob(os.path.join(b, "2*", "submission.json"))):
@@ -47,7 +49,7 @@ def main():
             tag = os.path.basename(d)
             if tag in res:
                 continue
-            _, priv = score_submission(run, cpath, n_workers=a.workers)
+            priv = scorer.score(run).private
             g = priv["grids"]["grid_M"]
             pub_b = os.path.join(d, "score", "public.json")
             b_score = json.load(open(pub_b))["score"] if os.path.exists(pub_b) else None

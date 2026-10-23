@@ -1,14 +1,14 @@
 # Closed-loop scorer for terminal-model submissions
 
-The agent submits its device model as equations in a JSON file. For every held-out run, the scorer drops that model into the grid in ANDES in place of the real device, re-runs the same disturbance, and compares the device's terminal P and Q with the clean recording. It also linearizes the submitted model to compare its frequency response and droops with the truth. Everything in this folder is trusted kernel code. The agent and the updater never see it, except `symbolic.py`, which `harness_v0/run_harness.py` copies into the agent's `tools/` (locked) so the agent-side checker parses with exactly these rules.
+The agent submits its device model as equations in a JSON file. For every held-out run, the scorer drops that model into the grid in ANDES in place of the real device, re-runs the same disturbance, and compares the device's terminal P and Q with the clean recording. It also linearizes the submitted model to compare its frequency response and droops with the truth. Everything in this folder is trusted kernel code. The agent and the updater never see it, except `submission_parser.py`, which `solver/solver_run.py` copies into the agent's `tools/` (locked) so the agent-side checker parses with exactly these rules.
 
 ## Why closed loop, and how it works
 
-Open-loop replay (driving the model with the recorded V and theta) failed on the true model: REGF1's inner current loop is unstable once V and theta are held fixed, because ANDES only damps it through the network impedance. Closed loop has no such problem. `truth/regf1_spec.py` writes REGF1 as a submission, and run closed loop it reproduces the case CSVs to 6e-6 pu at worst, so the truth now scores exactly 0.
+Open-loop replay (driving the model with the recorded V and theta) failed on the true model: REGF1's inner current loop is unstable once V and theta are held fixed, because ANDES only damps it through the network impedance. Closed loop has no such problem. `truth/regf1_as_submission.py` writes REGF1 as a submission, and run closed loop it reproduces the case CSVs to 6e-6 pu at worst, so the truth now scores exactly 0.
 
-ANDES only runs models written in its own format and registered in its model list. `closedloop.py` fills a fixed ANDES model template with the submission's equations, which have been parsed and re-printed by sympy. It then registers the class at runtime and generates its numerical code into a per-score copy of the pycode folder, so `~/.andes/pycode` is never touched. Each run is a separate process (spawn) with a timeout, and runs go in parallel.
+ANDES only runs models written in its own format and registered in its model list. `andes_closed_loop.py` fills a fixed ANDES model template with the submission's equations, which have been parsed and re-printed by sympy. It then registers the class at runtime and generates its numerical code into a per-score copy of the pycode folder, so `~/.andes/pycode` is never touched. Each run is a separate process (spawn) with a timeout, and runs go in parallel.
 
-A submission is pure data. Expressions are converted from the Python AST to sympy node by node against a whitelist, and nothing is ever `eval`'d, so no Docker sandbox is needed for scoring. Code injection and attribute access are rejected; the tests check both.
+A submission is pure data. Expressions are converted from the Python AST to sympy node by node against a whitelist, and nothing is ever `eval`'d, so no Docker sandbox is needed for scoring. Code injection and attribute access are rejected; the tests check both. Anything that goes wrong while parsing a submission, or while building it into an ANDES model, makes it score 2 on every grid: `score_submission.py` never exits with an error because of what a submission contains.
 
 
 ## Submission format (agent-facing contract)
@@ -27,11 +27,11 @@ A submission is pure data. Expressions are converted from the Python AST to symp
 * **Symbols.** `V` and `theta` are the terminal voltage magnitude (pu) and bus angle (rad), both live. `Vset` is the device's voltage setpoint (pu), also live: it equals `V0` until an operator steps it (the staged voltage-reference tests), and the data log it in the `voltage_setpoint_pu` column. `V0`, `theta0`, `P0` and `Q0` are the operating point at t = 0, with P and Q in pu on the device rating. `pi` is also available, along with the params, the states, and any defs already defined.
 * **defs** are named intermediate expressions. They are evaluated in order and must not refer to themselves in a cycle. They are substituted inline, so there are no algebraic loops.
 * **init** expressions may use `V0`, `theta0`, `P0`, `Q0`, `pi`, params and other states' inits (not `Vset`, which equals `V0` at t = 0). They should put the model at rest at the operating point. Setpoints should come from the operating point rather than being hardcoded, because held-out grids run at different dispatch.
-* **Functions:** sin, cos, tan, exp, log, sqrt, tanh, atan, atan2, Abs, Min, Max. Operators: `+ - * / **`.
-* **Limits:** 60 states, 200 defs, 200 params, 4000 characters per expression. Time `t` is not available.
+* **Functions:** sin, cos, tan, exp, log (with an optional base), sqrt, tanh, atan, atan2 (two arguments), Abs, Min, Max. A call with the wrong number of arguments is rejected. Operators: `+ - * / **`.
+* **Limits:** 60 states, 200 defs, 200 params, 4000 characters per expression. Time `t` is not available. Defs are substituted into whatever uses them, so a short chain of defs can describe an enormous expression; each expression is measured with its defs written out and rejected above 20,000 nodes (the largest of the first 30 submissions, the truth included, has 262). A power of two numbers is rejected when its exponent is above 1000, since sympy would evaluate it exactly.
 * `baselines/flat.json` is the smallest valid submission.
 
-`python tools/check_submission.py submission.json val/A_val_vref_op2.csv` (the agent-side checker in `harness_v0/harness/tools/`) parses the file with the scorer's rules, checks that the first sample is a steady state, and replays the run open loop (measured V and theta, logged Vset) as a sanity check.
+`python tools/check_submission.py submission.json val/A_val_vref_op2.csv` (the agent-side checker in `harness_v0/harness/tools/`, with its open-loop replay in `open_loop_replay.py`) parses the file with the scorer's rules, checks that the first sample is a steady state, and replays the run open loop (measured V and theta, logged Vset) as a sanity check.
 
 **How a setpoint step reaches a submission.** The submission's `Vset` becomes a constant `c_Vset` in the generated ANDES class. A held-out voltage-reference step is an ANDES `Alter` on that constant, at the same time and size as the `Alter` on REGF1's `vref` that produced the recording. The truth spec uses `Vset` in its voltage reference, and it reproduces the grid B step run to 1e-8 pu.
 
@@ -52,15 +52,18 @@ All components are normalized so that the flat prediction scores exactly 1.0 and
 ## Running it (Mac, in the shared `Fall DRA/.venv`: ANDES 2.0.0, sympy, pandas)
 
 ```bash
-cd "Fall DRA/Harness_testing/scorer"
-PY=../../.venv/bin/python
-$PY score.py baselines/flat.json --config config_min.json --out runs/flat
-$PY score.py path/to/submission.json --config config_min.json --out runs/<name> [--workers 4]
-$PY score.py path/to/submission.json --config config_rsi.json --out runs/<name>   # adds grid M (monitor)
-$PY tests/test_scorer.py            # config_min.json; --quick skips the sensitivity sweep
+cd "Fall DRA/Harness_testing"
+PY=../.venv/bin/python
+$PY scorer/score_submission.py scorer/baselines/flat.json --config scorer/config_min.json --out scorer/runs/flat
+$PY scorer/score_submission.py path/to/submission.json --out scorer/runs/<name> [--workers 4]      # config_min.json
+$PY scorer/score_submission.py path/to/submission.json --config scorer/config_rsi.json --out scorer/runs/<name>   # adds grid M
+$PY scorer/tests/test_submission_parser.py    # the parser's rules and the truth's droops; no ANDES needed
+$PY scorer/tests/test_scorer.py               # closed loop on config_min.json; --quick skips the sensitivity sweep
 ```
 
-When calling `score_submission()` from the RSI loop script, keep the script's top level under `if __name__ == "__main__":`. On macOS, worker processes are spawned, and spawned processes re-import the main script.
+From Python, `SubmissionScorer(config_path, worker_count).score(path)` returns a report with `.public` and `.private`, and `write_score_files(report, folder)` writes them. A script that uses it must keep its top level under `if __name__ == "__main__":`: on macOS the ANDES worker processes are spawned, and spawned processes re-import the main script.
+
+Which device a grid holds is a setting of the grid (its answer key's `device`), and the truth model the scorer compares with comes from `truth/__init__.py`'s `TRUTH_SPEC_BUILDERS` for that name. Only REGF1 is there today.
 
 ## Test results on the minimum test cases (config_min.json, Oct 10)
 
@@ -99,23 +102,25 @@ Before scoring I reproduced your `test_1` and `train_3` CSVs with my ANDES insta
 
 | file | what it does |
 |---|---|
-| `score.py` | CLI and `score_submission()` |
-| `symbolic.py` | parses and checks submissions, lambdify for replay, exact linearization |
-| `closedloop.py` | ANDES model template, runtime registration, codegen, parallel runs with timeouts |
-| `metrics.py` | TD, FR and droop errors |
-| `cases.py` | loads grids in the `kundur_family_v1` format (test_cases/grid_*) |
-| `grids/kundur_family.py` | rebuilds any Kundur-family grid from its `holdout/case.json` (network, operating point, events) with any device in the slot |
+| `score_submission.py` | the command line, `SubmissionScorer` and `write_score_files()` |
+| `submission_parser.py` | parses and checks submissions (`TerminalModel`), numeric functions for replay, exact linearization |
+| `andes_closed_loop.py` | ANDES model template, runtime registration, codegen, parallel runs with timeouts |
+| `score_components.py` | TD, FR and droop errors |
+| `scoring_grids.py` | loads a scorer config and its grids in the `kundur_family_v1` format (test_cases/grid_*) |
+| `grids/kundur_family_builder.py` | rebuilds any Kundur-family grid from its `holdout/case.json` (network, operating point, events) with any device in the slot |
 | `config_min.json` | minimum test cases: grid B as the selection grid, grid A's two held-out runs as a private same-grid diagnostic |
 | `config_rsi.json` | for RSI runs and anything compared with them: `config_min.json` plus grid M as a hidden monitor (role `monitor`, private, never used to accept). Built and checked in `../test_cases` (grid M section of its README) |
-| `truth/regf1_spec.py` | REGF1 as a submission (full and ideal current loop) |
+| `truth/regf1_as_submission.py` | REGF1 as a submission (full and ideal current loop, and deliberately wrong versions) |
+| `truth/__init__.py` | which truth model goes with which device name |
 | `baselines/flat.json` | floor baseline |
-| `tests/test_scorer.py` | the checks above |
+| `tests/test_scorer.py` | the closed-loop checks above (needs ANDES) |
+| `tests/test_submission_parser.py` | 20 checks of the parser's rules, odd but valid submissions, and the truth's droops against the answer keys (no ANDES) |
 
 ## Open questions
 
 1. **Closed loop compresses the scale.** In open-loop replay, wdrp × 0.8 scored 0.40. Closed loop it scores 0.13, because the grid partly absorbs the device's error. Good and mediocre candidates now differ by smaller numbers, which matters for how many reps the keep/revert rule needs.
 2. **The score still leans on the P side, and that is physics.** At 20% off, Qdrp costs about 0.04 to 0.05 and wdrp about 0.12. A Q-V droop of 4% is stiff next to the network reactance the device sees (about 0.3 pu on its rating), so the network largely sets Q and the slope barely moves it: in steady state $\Delta Q = \Delta V_{set}/(R_q + X_{th})$. Voltage-reference steps in the new cases give clean Q-V runs but do not change that ratio. Q-V droop errors register at full size in PAR and in the Q/V frequency-response entry.
 3. **The droop errors leak the true droop to the updater** via `public.json` plus the transcripts. Decided Oct 17: the updater gets only the composite, the TD per held-out run and channel, and failure messages, since an operator could compute TD from held-out recordings but FR and PAR need the true model. FR and PAR still feed the accept rule. `public.json` itself still carries them, so the RSI loop's context builder has to strip them. The composite minus half the TD still gives 0.3 FR + 0.2 PAR per run, one mixed number, which is one reason the updater gets no code execution.
-4. **Grid format (done for the Kundur family).** `kundur_family_v1` covers any grid derived from kundur_full. A different base network (IEEE 14 or 39 for the test tier) needs its own builder with the same `build(device, params, run, pycode_path, spec)` signature.
+4. **Grid format (done for the Kundur family).** `kundur_family_v1` covers any grid derived from kundur_full. A different base network (IEEE 14 or 39 for the test tier) needs its own builder with the same `build_system(device_model, device_params, run_name, pycode_path, case_spec)` signature, and one line in `scoring_grids.py`'s `GRID_BUILDERS`.
 5. **Cost.** Each held-out run costs one full ANDES simulation per submission. `config_min.json` has five runs (3 x 25 s on B, 2 x 20 s on A) and takes about 2.5 minutes per score on 2 cores in the cloud, less on your Mac with more workers. Dropping grid A's diagnostic runs from the config cuts that to about 1.7 minutes. `config_rsi.json` adds grid M's three 25 s runs, eight runs in all.
-6. **One operating point per grid in the scorer.** `cases.py` still requires every held-out run on a grid to share its t = 0 operating point, because FR and PAR are evaluated at one point. Grid A's training data uses three operating points; grid B's held-out runs share one.
+6. **One operating point per grid in the scorer.** `scoring_grids.py` still requires every held-out run on a grid to share its t = 0 operating point, because FR and PAR are evaluated at one point. Grid A's training data uses three operating points; grid B's held-out runs share one.
