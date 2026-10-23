@@ -190,8 +190,10 @@ with open(os.path.join(STARTING_HARNESS_DIR, "method.md")) as file:
 
 def proposal(*writes):
     """An updater reply that writes files and finishes, then the second finish after its self-test."""
-    return [reply(*[use("write_file", path=path, content=content) for path, content in writes], use("finish", **FINISH)),
-            reply(use("finish", **FINISH))]
+    report = "".join(f"## {key}\n{value}\n" for key, value in FINISH.items())
+    return [reply(*[use("write_file", path=path, content=content) for path, content in writes],
+                  use("write_proposal", content=report), use("finish")),
+            reply(use("finish"))]
 
 
 GOOD = proposal(("tools/closed_loop_check.py", TOOL), ("method.md", METHOD))

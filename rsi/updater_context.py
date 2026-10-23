@@ -73,15 +73,15 @@ UPDATER_TOOLS = [
      "description": "Remove one file from tools/ in the new harness. method.md, system.md and "
                     "tools/submission_parser.py cannot be removed.",
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+    {"name": "write_proposal",
+     "description": "Write your report on the change, as markdown with five headings, each with plain text under "
+                    "it: ## evidence, ## root_cause, ## change, ## predicted_effect, ## at_risk. It is not part "
+                    "of the harness and the solver never sees it. Calling it again replaces the report.",
+     "input_schema": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}},
     {"name": "finish",
-     "description": "Submit the new harness. Call it once, after all your write_file and delete_file calls.",
-     "input_schema": {"type": "object", "properties": {
-         "evidence": {"type": "string", "description": "the run ids and what happened in them"},
-         "root_cause": {"type": "string", "description": "what in the harness causes it"},
-         "change": {"type": "string", "description": "what you changed, in one or two sentences"},
-         "predicted_effect": {"type": "string", "description": "which numbers should move, and roughly how far"},
-         "at_risk": {"type": "string", "description": "what could get worse"}},
-         "required": ["evidence", "root_cause", "change", "predicted_effect", "at_risk"]}},
+     "description": "Submit the new harness and the report you wrote with write_proposal. It takes no arguments. "
+                    "Call it after all your write_file, delete_file and write_proposal calls.",
+     "input_schema": {"type": "object", "properties": {}}},
 ]
 
 
@@ -91,7 +91,7 @@ class UpdaterContext:
     user_content: list      # the user message: the diagram, then parts 1 to 3 as text blocks
     readable_markdown: str  # the same as one readable document, with the image as a placeholder line
     stats: dict
-    tools: list             # write_file, delete_file, finish
+    tools: list             # write_file, delete_file, write_proposal, finish
 
 
 class LeakError(RuntimeError):

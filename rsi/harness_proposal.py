@@ -6,12 +6,16 @@ the result before any solver run sees it.
 
 Writes, under --out:
     harness/          the candidate harness (system.md, method.md, tools/), ready for solver_run.py --harness
-    proposal.json     status, the updater's manifest (its finish call), files changed, checks, warnings,
+    proposal.md       the updater's report (write_proposal), beside harness/ so it is never part of the harness
+    proposal.json     status, the updater's manifest (parsed from proposal.md), files changed, checks, warnings,
                       parent and candidate fingerprints, turns, tokens and cost
     diff.patch        the candidate against its parent
     transcript.json   the updater's whole exchange (the diagram replaced by its file name)
     context.md, context_stats.json   what the updater was given
 
+The updater writes its report to proposal.md with write_proposal, under five headings (evidence, root_cause,
+change, predicted_effect, at_risk), and then calls finish with no arguments. One long string per call is what
+it writes reliably; a finish with five string parameters let it leak one parameter's markup into another.
 Before a finish is accepted, the updater sees its own checker run on the best and the worst runs' submissions
 once (the self-test) and has to call finish again; --no-self-test skips that.
 
@@ -44,6 +48,10 @@ MAX_FILE_CHARS = 60000                  # one file; method.md is 1.5k today, the
 PARSER_TOOL = "tools/submission_parser.py"       # locked: copied over from scorer/ at run time
 CHECKER_TOOL = "tools/check_submission.py"       # the prompt says it may be extended, not removed
 MANIFEST_KEYS = ("evidence", "root_cause", "change", "predicted_effect", "at_risk")
+PROPOSAL_FILE = "proposal.md"           # beside the candidate's harness/ folder, never inside it
+MAX_PROPOSAL_CHARS = 20000
+# a heading line: one to six #, the name (spaces or underscores, any case), an optional colon
+PROPOSAL_HEADING = re.compile(r"^\s*#{1,6}\s*([A-Za-z][A-Za-z _]*?)\s*:?\s*$")
 # numbers that look fitted rather than chosen: a decimal with at least three significant digits (0.0396, 22.15)
 FITTED_LOOKING_DECIMAL = re.compile(r"(?<![\w.])\d+\.\d+(?:[eE][-+]?\d+)?(?![\w.])")
 # in method.md (as before): any decimal, or an integer of two digits or more
@@ -88,10 +96,29 @@ class CandidateWorkspace:
     def __init__(self, parent_dir, folder, scope):
         self.parent_dir, self.folder, self.scope = parent_dir, folder, scope
         copy_harness(parent_dir, folder)
+        self.proposal_path = os.path.join(os.path.dirname(os.path.abspath(folder)), PROPOSAL_FILE)
         self.refused = []
 
     def apply_tool_call(self, name, tool_input):
-        """Apply one write_file or delete_file call. Returns (message for the updater, is_error)."""
+        """Apply one write_file, delete_file or write_proposal call. Returns (message for the updater, is_error)."""
+        if name == "write_proposal":
+            content = tool_input.get("content")
+            error = None
+            if not isinstance(content, str) or not content.strip():
+                error = "content must be a non-empty string"
+            elif len(content) > MAX_PROPOSAL_CHARS:
+                error = f"content is {len(content)} characters; the limit is {MAX_PROPOSAL_CHARS}"
+            if error:
+                self.refused.append({"tool": name, "path": PROPOSAL_FILE, "reason": error})
+                return f"refused: {error}", True
+            existed = os.path.exists(self.proposal_path)
+            with open(self.proposal_path, "w", encoding="utf-8") as file:
+                file.write(content)
+            message = f"{'replaced' if existed else 'wrote'} {PROPOSAL_FILE} ({len(content)} characters)"
+            _, problems = parse_proposal(content)
+            if problems:
+                message += ". finish will refuse it until this is fixed: " + "; ".join(problems)
+            return message, False
         if name == "write_file":
             path, content = tool_input.get("path"), tool_input.get("content")
             error = check_editable_path(path, self.scope)
@@ -121,6 +148,13 @@ class CandidateWorkspace:
             os.remove(os.path.join(self.folder, path))
             return f"removed {path}", False
         return f"unknown tool {name}", True
+
+    def proposal_text(self):
+        """proposal.md as written, or None."""
+        if not os.path.exists(self.proposal_path):
+            return None
+        with open(self.proposal_path, encoding="utf-8") as file:
+            return file.read()
 
     def changes(self):
         """{path: (old text or None, new text or None)} for every file that differs from the parent."""
@@ -333,22 +367,49 @@ def self_test_message(workspace, run_paths, context, scratch_parent, mode="docke
              "right for both: the best run's model is the best this harness has produced."]
     for entry in log:
         parts.append(f"{entry['label']}: {entry['cmd']} (exit {entry['exit']}, {entry['seconds']} s)\n{entry['output'].strip()}")
-    parts.append("Then call finish again: as it is to submit this harness, or after more edits.")
+    parts.append("Then call finish again, with no arguments: as it is to submit this harness, or after more edits "
+                 "(write_proposal again if your report changes).")
     return "\n\n".join(parts), log
 
 
-def finish_refusal(tool_input, missing):
-    """The refusal for a finish call with missing or empty fields. It names the fields that arrived, so an updater
-    that packed several fields into one string as <tag>...</tag> text is told what it did."""
-    present = [key for key in tool_input if str(tool_input.get(key, "")).strip()]
-    message = (f"refused: finish needs {', '.join(missing)} as separate parameters, each non-empty. "
-               f"This call had only: {', '.join(present) if present else 'no non-empty parameters'}.")
-    packed = sorted({key for key in missing for value in tool_input.values() if isinstance(value, str) and f"<{key}>" in value})
-    if packed:
-        message += (f" Your text holds <{'>, <'.join(packed)}> tags inside another parameter; tags inside a string "
-                    f"are not parameters. Call finish again with each of {', '.join(MANIFEST_KEYS)} as its own "
-                    f"parameter, holding plain text.")
-    return message
+def parse_proposal(text):
+    """proposal.md -> ({key: section text} for the five MANIFEST_KEYS, [problems]). A heading names a key when,
+    lowercased with spaces as underscores, it equals one ("## Root cause:" is root_cause). Any other heading stays
+    inside the section it is in. No problems means every key has exactly one non-empty section."""
+    sections, counts, current = {key: [] for key in MANIFEST_KEYS}, {key: 0 for key in MANIFEST_KEYS}, None
+    for line in text.splitlines():
+        match = PROPOSAL_HEADING.match(line)
+        key = re.sub(r"[ _]+", "_", match.group(1).strip().lower()) if match else None
+        if key in sections:
+            current = key
+            counts[key] += 1
+            continue
+        if current is not None:
+            sections[current].append(line)
+    fields = {key: "\n".join(lines).strip() for key, lines in sections.items()}
+    problems = []
+    missing = [key for key in MANIFEST_KEYS if counts[key] == 0]
+    repeated = [key for key in MANIFEST_KEYS if counts[key] > 1]
+    empty = [key for key in MANIFEST_KEYS if counts[key] and not fields[key]]
+    if missing:
+        problems.append("no heading for " + ", ".join(missing))
+    if repeated:
+        problems.append("more than one heading for " + ", ".join(repeated))
+    if empty:
+        problems.append("nothing under " + ", ".join(empty))
+    return fields, problems
+
+
+def proposal_refusal(text):
+    """The refusal for a finish whose proposal.md is missing or incomplete, or None if it is complete."""
+    layout = (f"Write it with write_proposal, one heading per field, each with text under it: "
+              + " ".join(f"## {key}" for key in MANIFEST_KEYS) + ". Then call finish again, with no arguments.")
+    if text is None:
+        return f"refused: there is no {PROPOSAL_FILE} yet. {layout}"
+    _, problems = parse_proposal(text)
+    if problems:
+        return f"refused: {PROPOSAL_FILE} is incomplete: {'; '.join(problems)}. {layout}"
+    return None
 
 
 def plain_block(block):
@@ -435,18 +496,20 @@ class HarnessUpdaterSession:
         if self.nudged:
             return None
         self.nudged = True
-        return "Make your change with write_file or delete_file, then call finish."
+        return ("Make your change with write_file or delete_file, write your report with write_proposal, "
+                "then call finish with no arguments.")
 
     def _answer_finish(self, finish):
-        """(tool result for the finish call, whether the candidate is now submitted)."""
-        tool_input = finish.input if isinstance(finish.input, dict) else {}
-        missing = [key for key in MANIFEST_KEYS if not str(tool_input.get(key, "")).strip()]
+        """(tool result for the finish call, whether the candidate is now submitted). finish takes no arguments
+        (any it is given are ignored): the manifest comes from proposal.md, read again at every call, so an
+        updater that edits its report during the self-test round submits the edited one."""
         if not self.workspace.changes():
             return {"type": "tool_result", "tool_use_id": finish.id, "is_error": True,
                     "content": "refused: the harness is unchanged; write at least one file first"}, False
-        if missing:
-            return {"type": "tool_result", "tool_use_id": finish.id, "is_error": True,
-                    "content": finish_refusal(tool_input, missing)}, False
+        report = self.workspace.proposal_text()
+        refusal = proposal_refusal(report)
+        if refusal:
+            return {"type": "tool_result", "tool_use_id": finish.id, "is_error": True, "content": refusal}, False
         if self.self_test and not self.self_test_done:
             self.self_test_done = True
             text, log = self_test_message(self.workspace, self.run_paths, self.context, self.scratch_parent,
@@ -454,7 +517,7 @@ class HarnessUpdaterSession:
             self.self_test_log += log
             if text is not None:
                 return {"type": "tool_result", "tool_use_id": finish.id, "content": text}, False
-        self.manifest = {key: str(tool_input[key]).strip() for key in MANIFEST_KEYS}
+        self.manifest, _ = parse_proposal(report)
         return {"type": "tool_result", "tool_use_id": finish.id, "content": "submitted"}, True
 
 

@@ -58,7 +58,10 @@ context = build(scope="tools")
 check("read-only in this run" in context.system_prompt and "Everything you write must hold" in context.system_prompt,
       "the tools scope keeps the device rule and marks system.md read-only")
 check([block["type"] for block in context.user_content] == ["image", "text", "text", "text"], "the image first, then parts 1 to 3")
-check({tool["name"] for tool in context.tools} == {"write_file", "delete_file", "finish"}, "three updater tools")
+check({tool["name"] for tool in context.tools} == {"write_file", "delete_file", "write_proposal", "finish"},
+      "four updater tools")
+check(next(tool for tool in context.tools if tool["name"] == "finish")["input_schema"]["properties"] == {},
+      "finish takes no arguments")
 check("tools/submission_parser.py (locked" in context.user_content[1]["text"] and "symbolic.py" not in context.system_prompt,
       "the parser is shown as tools/submission_parser.py, locked")
 
@@ -202,8 +205,15 @@ if os.path.exists(golden):
         return text[:start] + text[text.index("## The solver's tool"):]
     instructions_end = before.index("# User message")
     before = before[:instructions_end].replace("symbolic.py", "submission_parser.py") + before[instructions_end:]
+    # Oct 22: the report moved from finish's five parameters to write_proposal (rsi/harness_proposal.py says why)
+    with open(os.path.join(REPOSITORY_ROOT, "rsi", "updater_prompt.md")) as file:
+        output_now = file.read().split("\nOUTPUT\n", 1)[1].strip()
+    output_then = before.split("\nOUTPUT\n", 1)[1].split("\n\n", 1)[0].strip()
+    check(output_then.startswith("Call write_file") and "Then call finish with:" in output_then,
+          "the golden context still has the old OUTPUT section to swap out")
+    before = before.replace(output_then, output_now, 1)
     check(without_parser(build().readable_markdown) == without_parser(before),
-          "the Oct 13 context is unchanged by the rewrite, apart from the parser")
+          "the Oct 13 context is unchanged by the rewrite, apart from the parser and the report layout")
 
 shutil.rmtree(work, ignore_errors=True)
 print(f"\nall {passed} checks passed")

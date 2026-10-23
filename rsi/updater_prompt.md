@@ -35,9 +35,15 @@ RULES
 - tools/check_submission.py may be extended, but it must keep parsing submissions with tools/submission_parser.py.
 
 OUTPUT
-Call write_file once for each file you change or add, with its complete new content, and delete_file for any file you remove. Then call finish with:
-- evidence: the run ids and what happened in them
-- root_cause: what in the harness causes it
-- change: what you changed, in one or two sentences
-- predicted_effect: which numbers should move, and roughly how far
-- at_risk: what could get worse
+Call write_file once for each file you change or add, with its complete new content, and delete_file for any file you remove. Then call write_proposal once with your report, as markdown under these five headings, each with plain text under it:
+## evidence
+the run ids and what happened in them
+## root_cause
+what in the harness causes it
+## change
+what you changed, in one or two sentences
+## predicted_effect
+which numbers should move, and roughly how far
+## at_risk
+what could get worse
+Then call finish, with no arguments.
