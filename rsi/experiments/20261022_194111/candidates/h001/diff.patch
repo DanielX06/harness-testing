@@ -1,0 +1,91 @@
+--- a/method.md
++++ b/method.md
+@@ -2,7 +2,12 @@
+ 1. Read runs.json and dataset.json, then look at the data before fitting anything. Check what moves after each event and on what time scales, how the device's P and Q relate to V, theta and the voltage setpoint, and how large the noise is.
+ 2. Use both kinds of recording. The staged voltage-reference tests show the device's voltage control directly. The ambient recordings and natural events show how it responds to the grid.
+ 3. Propose a candidate structure and fit its parameters on train/, with P and Q as outputs and V, theta and Vset as inputs, the way the scorer uses them.
+-4. Check each candidate as close to how it will be scored as you can: drive it with the measured V, theta and Vset from val/, integrate it forward, and compare its P and Q with the measured ones. The scorer runs closed loop, inside the grid. A model that reacts too strongly can destabilize the grid even if it replays well. A model with very fast internal dynamics can diverge in open-loop replay and still run fine in the grid.
+-5. Revise based on what the residuals show, not on the fit score alone. Keep track of which candidates you rejected and why.
+-6. Stop when the residuals are close to the noise or further terms stop improving the validation fit. Note any parameter that is poorly identified or trades off against another one.
+-7. Write the model to submission.json. Run python tools/check_submission.py submission.json val/<file>.csv on each validation file, fix anything it reports, and then submit.
++4. Check each candidate as close to how it will be scored as you can: drive it with the measured V, theta and Vset from val/, integrate it forward, and compare its P and Q with the measured ones.
++5. STABILITY GATE (required before you submit). Run `python tools/stability_check.py submission.json val/A_val_load_op1.csv`. The model goes into a grid that feeds its P and Q back into V and theta, so a model that is unstable there scores worst. The check must show:
++   - no eigenvalue with real part >= 0;
++   - dQ/dV steady-state sensitivity <= 0 (Q must not rise with V);
++   - no time constant below 2 ms.
++   If any check fails, change the structure or the gains until it passes. Do not submit with a failing check. Common causes: a voltage-driven Q path with a large positive gain, a pure integrator on V with no leak, or a very fast lag. Fitted values that hit a bound are a warning sign for this check.
++6. Revise based on what the residuals show, not on the fit score alone. Keep track of which candidates you rejected and why. A simpler structure that passes the gate beats a better fit that fails it.
++7. Stop when the residuals are close to the noise or further terms stop improving the validation fit. Note any parameter that is poorly identified or trades off against another one.
++8. Write the model to submission.json. Run `python tools/check_submission.py submission.json val/<file>.csv` on each validation file, and `python tools/stability_check.py submission.json val/<file>.csv`. Fix anything they report, then submit.
+--- /dev/null
++++ b/tools/stability_check.py
+@@ -0,0 +1,69 @@
++"""Linear checks of a submission at its operating point, before it goes into the grid.
++
++    python tools/stability_check.py submission.json val/<file>.csv
++
++Uses the first sample of the given CSV as the operating point (V0, theta0, P0, Q0) and the scorer's own
++linearization. Prints:
++  - the eigenvalues of the state matrix, with the largest real part (must be negative);
++  - the steady-state sensitivities dP/dV, dQ/dV, dP/dtheta, dQ/dtheta (V and theta held as inputs,
++    states settled, Vset = V0);
++  - warnings for: an eigenvalue with real part >= 0 (unstable), dQ/dV > 0 (Q rising with V is positive
++    feedback through the grid), a time constant below 2 ms (faster than the 1 ms recording can resolve),
++    and a singular state matrix (a pure integrator, which leaves the steady-state gain undefined).
++A warning is a reason to look again at the structure, not a verdict on its own.
++"""
++import os
++import sys
++
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++import numpy as np                                      # noqa: E402
++import pandas as pd                                     # noqa: E402
++import submission_parser                                # noqa: E402
++
++
++def main(submission_path, csv_path):
++    model = submission_parser.load_submission(submission_path)
++    first = pd.read_csv(csv_path).iloc[0]
++    operating_point = [float(first["voltage_pu"]), float(first["bus_angle_rad"]),
++                       float(first["active_power_pu"]), float(first["reactive_power_pu"])]
++    lin = model.linearize(operating_point)
++    A, B, C, D = lin["A"], lin["B"], lin["C"], lin["D"]
++    warnings = []
++    if A.size:
++        eig = np.linalg.eigvals(A)
++        real_parts = np.sort(eig.real)
++        print("state eigenvalues (real, imag):")
++        for lam in eig[np.argsort(eig.real)]:
++            print(f"   {lam.real:+.4e} {lam.imag:+.4e}j")
++        if real_parts[-1] >= 0:
++            warnings.append(f"UNSTABLE linearization: largest real part {real_parts[-1]:.3e}")
++        fast = np.abs(eig.real) > 1 / 0.002
++        if np.any(fast):
++            warnings.append("a pole faster than 2 ms (time constant below 2 ms): the 1 ms recording "
++                            "cannot resolve it and replay may diverge")
++        det = abs(np.linalg.det(A))
++        if det < 1e-12:
++            warnings.append("state matrix is singular (a pure integrator): steady-state gains are "
++                            "computed with least squares and may be meaningless")
++            G = -np.linalg.lstsq(A, B, rcond=None)[0]
++        else:
++            G = -np.linalg.solve(A, B)
++    else:
++        G = np.zeros((0, 2))
++    S = D + C @ G
++    print("steady-state sensitivities (rows P, Q; columns V, theta):")
++    print(np.array2string(S, precision=4))
++    if S[1, 0] > 0:
++        warnings.append(f"dQ/dV = {S[1, 0]:.4g} > 0: Q rises with V, positive feedback in the grid")
++    for message in warnings:
++        print("WARNING:", message)
++    if not warnings:
++        print("no warnings")
++    return 0
++
++
++if __name__ == "__main__":
++    if len(sys.argv) != 3:
++        print(__doc__)
++        sys.exit(1)
++    sys.exit(main(sys.argv[1], sys.argv[2]))

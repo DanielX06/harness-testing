@@ -1,0 +1,52 @@
+The model is in `submission.json` and passes the scorer's checks: it starts at rest, and on both validation recordings its open-loop replay beats the flat baseline. I did not run a closed-loop grid simulation, so stability in the scorer's network is unverified.
+
+**Structure (all relative to the operating point; θ enters only through a washout):**
+- Frequency estimate: ω ≈ (θ − x)/(2π·T_w), where x is a washout state that starts at θ0, so ω tracks dθ/dt.
+- Active power: a lagged droop, `dxp/dt = (P0 − D_p·ω + k_pv·(V − V0) − xp)/t_p`, with P = xp.
+- Reactive power: Q = Q0 + ξ + K_p·(Vset − Vf) + k_f·(Vq − V0), where:
+  - ξ integrates K_i·(Vset − Vf), a voltage-error integral that matches the slow Q drift after setpoint steps and the generator-trip recovery;
+  - Vf is V low-passed with time constant t_v, which is the sensed voltage;
+  - Vq is V low-passed with time constant t_f, feeding a fast voltage term k_f that the fault recording needed.
+
+**Fitted values:** K_i = 0.631, K_p = 1.68, D_p = 0.283, T_w = 0.107 s, k_pv = −0.046, t_p = 0.01 s (the lower bound, so the P lag is essentially unresolved), t_v = 2.83 s, k_f = 0.94, t_f = 0.039 s.
+
+**Identification:**
+- **Well identified:** the integral gain K_i, the setpoint-to-Q response, and the P droop D_p, which is set by the generator-trip and frequency-recovery data.
+- **Poorly identified:** t_p, which sits at its lower bound and matters little. T_w and the fast Q terms (k_f, t_f) trade off with each other and are set by a few transient samples. The slow filter t_v and the proportional gain K_p also trade off, since both shape the same setpoint response.
+- **Weak spot:** the fault and line-trip recordings still leave Q residuals of about 0.02–0.027 pu. The fast Q behaviour during a sag is not captured by a single lag, so Q is the least trustworthy part for large disturbances.
+
+**Validation (open-loop replay, RMSE vs. flat baseline):**
+- A_val_load_op1: P 5.2e-4 (flat 2.4e-2), Q 9.1e-3 (flat 2.8e-2).
+- A_val_vref_op2: P 7.6e-4 (flat 5.9e-3), Q 9.6e-3 (flat 3.0e-2).
+
+I did not run the linearized frequency-response or droop checks, or the closed-loop grid test, so the stability and droop scores are unverified.
+
+```json
+{
+  "params": {
+    "Ki": 0.6313838,
+    "Kp": 1.6811668,
+    "Dp": 0.28340,
+    "Tw": 0.107215,
+    "kpv": -0.046286,
+    "tp": 0.01,
+    "tv": 2.831686,
+    "kf": 0.941174,
+    "tf": 0.039199
+  },
+  "defs": {
+    "w": "(theta-x)/Tw/(2*pi)"
+  },
+  "states": {
+    "x":  {"rhs": "(theta-x)/Tw", "init": "theta0"},
+    "xi": {"rhs": "Ki*(Vset-Vf)", "init": "0.0"},
+    "Vf": {"rhs": "(V-Vf)/tv", "init": "V0"},
+    "Vq": {"rhs": "(V-Vq)/tf", "init": "V0"},
+    "xp": {"rhs": "(P0 - Dp*w + kpv*(V-V0) - xp)/tp", "init": "P0"}
+  },
+  "outputs": {
+    "P": "xp",
+    "Q": "Q0 + xi + Kp*(Vset-Vf) + kf*(Vq-V0)"
+  }
+}
+```
