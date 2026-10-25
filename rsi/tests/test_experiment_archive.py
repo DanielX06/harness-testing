@@ -70,6 +70,7 @@ def make_experiment(name, data_dir):
     write(os.path.join(stopped, "sandbox", "tools", "helper.py"), "print('tool')\n")
     write(os.path.join(stopped, "sandbox", "submission.json"), '{"agent": 1}')
     write(os.path.join(stopped, "sandbox", "train", "a.csv"), "edited by the agent\n")
+    write(os.path.join(stopped, "sandbox", "tools", "__pycache__", "helper.cpython-312.pyc"), b"bytecode")
     return experiment
 
 
@@ -91,6 +92,7 @@ check(packed == {"runs/h000_baseline/r1/transcript.json", "runs/h000_baseline/r1
                  "runs/h001_test/r2/transcript.json", "runs/h001_test/r2/sandbox/tools/helper.py",
                  "runs/h001_test/r2/sandbox/submission.json", "runs/h001_test/r2/sandbox/train/a.csv"},
       "packed: transcripts, checkpoints, failure trajectories, DEBUG tails, and a sandbox's own and edited files")
+check(not any("__pycache__" in path for path in packed), "a sandbox's __pycache__ is not packed")
 check(manifest["sandboxes"]["runs/h001_test/r2"]["dropped_inputs"] == 3,
       "a sandbox's unchanged recordings are dropped, an edited one is packed")
 check(all(not os.path.exists(os.path.join(experiment, path)) for path in packed)
@@ -98,13 +100,16 @@ check(all(not os.path.exists(os.path.join(experiment, path)) for path in packed)
       "the packed files and the leftover sandbox are removed")
 kept = set(snapshot(experiment))
 check(kept == set(before) - packed - {"runs/h001_test/r2/sandbox/dataset.json", "runs/h001_test/r2/sandbox/train/b.csv",
-                                      "runs/h001_test/r2/sandbox/val/c.csv"},
+                                      "runs/h001_test/r2/sandbox/val/c.csv",
+                                      "runs/h001_test/r2/sandbox/tools/__pycache__/helper.cpython-312.pyc"},
       "everything else stays: meta, submission, final.md, scores, INFO logs, solver logs, candidates/, summary")
 check(not os.path.exists(os.path.join(experiment, A.ARCHIVE_NAME + ".tmp")), "no temporary archive is left behind")
 
 # 2. restoring gives back every byte
+pycache = "runs/h001_test/r2/sandbox/tools/__pycache__/helper.cpython-312.pyc"
+before.pop(pycache)
 check(A.restore(experiment, messages.append) and snapshot(experiment) == before,
-      "restoring gives back every file, the sandbox's recordings copied from its data folder")
+      "restoring gives back every file but bytecode, the sandbox's recordings copied from its data folder")
 check(not os.path.exists(os.path.join(experiment, A.ARCHIVE_NAME)) and not os.path.exists(os.path.join(experiment, A.MANIFEST_NAME)),
       "restoring removes the archive and its manifest")
 check(A.restore(experiment, messages.append) is False, "restoring a folder with no archive does nothing")
@@ -161,10 +166,25 @@ shutil.move(data_dir + "_elsewhere", data_dir)
 moved_after = snapshot(moved)
 check(any("is not on this machine" in message for message in messages)
       and all(moved_after.get(path) == moved_before[path] for path in moved_before
-              if not path.endswith(("dataset.json", "b.csv", "c.csv"))),
+              if not path.endswith(("dataset.json", "b.csv", "c.csv", ".pyc"))),
       "without its data folder, a sandbox is restored without its recordings, with a warning")
 
-# 7. nothing to pack, and paths outside the folder
+# 7. a folder this user cannot empty (root-owned, as the Docker container leaves it on Linux) stops packing first
+locked = make_experiment("locked", data_dir)
+locked_tools = os.path.join(locked, "runs", "h001_test", "r2", "sandbox", "tools")
+if os.geteuid() != 0:
+    locked_before = snapshot(locked)
+    os.chmod(locked_tools, 0o555)
+    try:
+        A.archive(locked, messages.append)
+        stopped_early = False
+    except A.ArchiveError as error:
+        stopped_early = "sudo chown" in str(error)
+    os.chmod(locked_tools, 0o755)
+    check(stopped_early and snapshot(locked) == locked_before and not os.path.exists(os.path.join(locked, A.ARCHIVE_NAME)),
+          "a sandbox folder this user cannot empty stops packing before anything is written, with the chown to run")
+
+# 8. nothing to pack, and paths outside the folder
 empty = os.path.join(work, "empty")
 write(os.path.join(empty, "config.json"), "{}")
 check(A.archive(empty, messages.append) is None and not os.path.exists(os.path.join(empty, A.ARCHIVE_NAME)),

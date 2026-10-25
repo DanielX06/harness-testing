@@ -24,7 +24,9 @@ repository commits.
 archive.tar.xz holds the files. archive_manifest.json beside it lists each one with its size and sha256, and each
 removed sandbox with its data folder and that folder's fingerprint. Packing writes the archive to a temporary file,
 reads every file back out of it and checks its hash, and only then removes the originals, so a failure at any step
-leaves the run files where they were. An experiment has one archive: packing again unpacks the old one first.
+leaves the run files where they were. It first checks that it can remove everything it packs: on Linux the solver's
+Docker container writes into the sandbox as root, and those folders need a `sudo chown` first. A sandbox's
+__pycache__ folders are removed, not packed. An experiment has one archive: packing again unpacks the old one first.
 Restoring checks every hash as it writes, then removes the archive and the manifest.
 """
 import argparse
@@ -155,7 +157,7 @@ def files_to_pack(experiment_dir, data_folders):
         inputs = data_folders.files(data_dir) or {}
         dropped = 0
         for root, dirs, names in os.walk(sandbox_dir):
-            dirs.sort()
+            dirs[:] = sorted(name for name in dirs if name != "__pycache__")     # bytecode: removed, not packed
             for name in sorted(names):
                 path = os.path.join(root, name)
                 if not os.path.isfile(path):
@@ -169,6 +171,22 @@ def files_to_pack(experiment_dir, data_folders):
                                         "data_fingerprint": data_folders.fingerprint(data_dir) if dropped else None,
                                         "dropped_inputs": dropped}
     return paths, sandboxes
+
+
+def check_removable(experiment_dir, paths, sandboxes):
+    """ArchiveError, before anything is written, if this user cannot remove a packed file or a sandbox. On Linux the
+    solver's Docker container writes into the sandbox as root, and a root-owned folder cannot be emptied."""
+    folders = {os.path.dirname(os.path.join(experiment_dir, path)) for path in paths}
+    for run in sandboxes:
+        folders.add(os.path.join(experiment_dir, run))
+        for root, _, _ in os.walk(os.path.join(experiment_dir, run, "sandbox")):
+            folders.add(root)
+    blocked = sorted(folder for folder in folders if not os.access(folder, os.W_OK | os.X_OK))
+    if blocked:
+        owner = os.stat(blocked[0]).st_uid
+        raise ArchiveError(f"cannot remove files in {len(blocked)} folders, {blocked[0]} (owner uid {owner}) first; "
+                           "nothing was changed. Files the solver's Docker container wrote are owned by root: run "
+                           f"`sudo chown -R $(id -u):$(id -g) {experiment_dir}` and pack again")
 
 
 def check_archive(archive_path, entries):
@@ -203,6 +221,7 @@ def archive(experiment_dir, log=print):
     if not paths and not sandboxes:
         log("archive: nothing to pack")
         return None
+    check_removable(experiment_dir, paths, sandboxes)
     entries = [{"path": path, "bytes": os.path.getsize(os.path.join(experiment_dir, path)),
                 "sha256": sha256_of_file(os.path.join(experiment_dir, path))} for path in paths]
     temporary = archive_path + ".tmp"
