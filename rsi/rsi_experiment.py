@@ -58,6 +58,10 @@ Everything goes in --out (default rsi/experiments/<date>_<time>):
                                 runs next to grid B for both arms of every block, and the M - B gap
     cycles.jsonl                for you, never for the updater: earlier harnesses each candidate returns to
     config.json, state.json, loop.log, loop.lock (while running)
+    archive.tar.xz, archive_manifest.json
+                                once the loop ends on its own: every run's transcript, checkpoint, failure
+                                trajectories and leftover sandbox, packed (experiment_archive.py); --resume unpacks
+                                them first
 """
 import argparse
 import hashlib
@@ -81,6 +85,7 @@ from common.hidden_names import remove_hidden_device_names  # noqa: E402
 from common.project_paths import (DEFAULT_EXPERIMENTS_DIR, RSI_SCORER_CONFIG, SOLVER_RUN_SCRIPT,  # noqa: E402
                                   STARTING_HARNESS_DIR)
 from common.run_provenance import git_commit  # noqa: E402
+from rsi.experiment_archive import ArchiveError, archive, restore  # noqa: E402
 from rsi.harness_proposal import propose_candidate  # noqa: E402
 from rsi.updater_context import hidden_score_names_pattern, read_history  # noqa: E402
 from solver.python_sandbox import SandboxUnavailable  # noqa: E402
@@ -916,7 +921,10 @@ def start_experiment(settings, client=None, launcher=None, **runner_options):
     write_json_atomically(folder.config, {"settings": asdict(settings), "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                                           "git_commit": git_commit(), "resumes": []})
     with LoopLock(folder.lock):
-        return RsiExperiment(settings, client, launcher, **runner_options).run()
+        experiment = RsiExperiment(settings, client, launcher, **runner_options)
+        current = experiment.run()
+        pack_finished_experiment(experiment)
+        return current
 
 
 def resume_experiment(experiment_dir, overrides=None, client=None, launcher=None, **runner_options):
@@ -937,7 +945,25 @@ def resume_experiment(experiment_dir, overrides=None, client=None, launcher=None
         settings = ExperimentSettings(**{**config["settings"], "out": folder.path})
         experiment = RsiExperiment(settings, client, launcher, **runner_options)
         experiment.log("resuming" + (f" with {changed}" if changed else ""))
-        return experiment.run(resuming=True)
+        try:
+            restore(folder.path, experiment.log)       # a finished experiment being extended was packed
+        except ArchiveError as error:
+            raise SystemExit(f"cannot resume: {error}")
+        current = experiment.run(resuming=True)
+        pack_finished_experiment(experiment)
+        return current
+
+
+def pack_finished_experiment(experiment):
+    """A loop that ended on its own (--iters, --patience, --max-usd) no longer needs its runs' transcripts,
+    checkpoints, failure trajectories or leftover sandboxes: pack them into archive.tar.xz (experiment_archive.py).
+    A loop stopped by a signal or exit code 3 never gets here. A failure leaves nothing lost and does not change the
+    loop's outcome."""
+    try:
+        archive(experiment.folder.path, experiment.log)
+    except Exception as error:      # noqa: BLE001 (the loop's result stands either way)
+        experiment.log(f"archive: not finished ({error}); nothing is lost. Pack by hand with "
+                       f"rsi/experiment_archive.py {experiment.folder.path}")
 
 
 def parse_arguments(argv=None):

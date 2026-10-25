@@ -6,7 +6,7 @@
     python run_all_checks.py --andes --rebuild-grid B      # also rebuild grid B and compare it with the committed one
 
 The fast checks are the submission parser's (scorer/tests/test_submission_parser.py), a solver run against a fake
-API, sandbox and scorer (solver/tests/test_solver_run.py) and the RSI loop's three test files (rsi/tests/). They
+API, sandbox and scorer (solver/tests/test_solver_run.py) and the RSI loop's four test files (rsi/tests/). They
 take a few minutes and run anywhere the venv's numpy, pandas and sympy do.
 
 --andes needs ANDES (the shared venv on the Mac). It runs scorer/tests/test_scorer.py --quick, then scores the
@@ -30,7 +30,7 @@ import numpy as np
 REPOSITORY_ROOT = os.path.dirname(os.path.abspath(__file__))
 FAST_CHECKS = ["scorer/tests/test_submission_parser.py", "solver/tests/test_solver_run.py",
                "rsi/tests/test_updater_context.py", "rsi/tests/test_harness_proposal.py",
-               "rsi/tests/test_rsi_experiment.py"]
+               "rsi/tests/test_rsi_experiment.py", "rsi/tests/test_experiment_archive.py"]
 ANDES_CHECKS = [["scorer/tests/test_scorer.py", "--quick"]]
 
 
