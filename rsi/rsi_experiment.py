@@ -59,9 +59,9 @@ Everything goes in --out (default rsi/experiments/<date>_<time>):
     cycles.jsonl                for you, never for the updater: earlier harnesses each candidate returns to
     config.json, state.json, loop.log, loop.lock (while running)
     archive.tar.xz, archive_manifest.json
-                                once the loop ends on its own: every run's transcript, checkpoint, failure
-                                trajectories and leftover sandbox, packed (experiment_archive.py); --resume unpacks
-                                them first
+                                once the loop ends on its own: every run's transcript, checkpoint and leftover
+                                sandbox, packed (experiment_archive.py), and the scorer's failure trajectories and
+                                DEBUG tails deleted; --resume unpacks them first
 """
 import argparse
 import hashlib
@@ -956,7 +956,8 @@ def resume_experiment(experiment_dir, overrides=None, client=None, launcher=None
 
 def pack_finished_experiment(experiment):
     """A loop that ended on its own (--iters, --patience, --max-usd) no longer needs its runs' transcripts,
-    checkpoints, failure trajectories or leftover sandboxes: pack them into archive.tar.xz (experiment_archive.py).
+    checkpoints or leftover sandboxes: pack them into archive.tar.xz, and delete the scorer's failure trajectories and
+    DEBUG tails (experiment_archive.py).
     A loop stopped by a signal or exit code 3 never gets here. A failure leaves nothing lost and does not change the
     loop's outcome."""
     try:

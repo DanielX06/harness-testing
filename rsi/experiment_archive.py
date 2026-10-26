@@ -11,12 +11,15 @@ by hand is safe at any point the loop is not running: --resume unpacks first and
 Packed, from every run folder under runs/, at its path relative to the experiment folder:
   transcript.json, checkpoint.json      the updater reads transcripts while the loop runs, so they stay unpacked
                                         until it stops
-  *_partial.npz, *.debug.log            score/andes/: the trajectory and the DEBUG tail of each failed
-                                        closed-loop task, for classifying failures
   sandbox/ of a run that never finished only what is not an unchanged copy of the run's data folder (meta.json
                                         "data"): the tools, the agent's own files, any recording it edited. The
                                         unchanged recordings are dropped and copied back from the data folder on
                                         --restore. A finished run has no sandbox (solver_run.py removes it).
+Deleted, not packed: score/andes/*_partial.npz and *.debug.log, the trajectory and the DEBUG tail the scorer keeps
+for each failed closed-loop task. Nothing reads them, they are most of an experiment's size and compress poorly
+(NumPy arrays), and scoring the run's submission.json again writes them again. They are removed only once the
+archive is in place. An archive made before this change still holds them and gives them back on restore; packing
+again deletes them.
 Everything else stays: meta.json, submission.json, final.md, score/public.json and private.json, the ANDES INFO
 logs, runs/<block>/logs/, all of candidates/ and the experiment-level files. That is what the experiments
 repository commits.
@@ -44,7 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 ARCHIVE_NAME = "archive.tar.xz"
 MANIFEST_NAME = "archive_manifest.json"
 PACKED_RUN_FILES = ("transcript.json", "checkpoint.json")       # at the top of a run folder
-PACKED_SUFFIXES = ("_partial.npz", ".debug.log")                # anywhere in a run folder outside its sandbox
+DELETED_SUFFIXES = ("_partial.npz", ".debug.log")               # anywhere in a run folder outside its sandbox
 CHUNK_BYTES = 1 << 20
 
 
@@ -133,9 +136,10 @@ class DataFolders:
 
 
 def files_to_pack(experiment_dir, data_folders):
-    """(paths, sandboxes). paths: every file to pack, relative to experiment_dir. sandboxes: {run folder relative to
-    experiment_dir: what restoring needs to rebuild its sandbox} for every sandbox packing removes."""
-    paths, sandboxes = [], {}
+    """(paths, sandboxes, deleted). paths: every file to pack, relative to experiment_dir. sandboxes: {run folder
+    relative to experiment_dir: what restoring needs to rebuild its sandbox} for every sandbox packing removes.
+    deleted: the scorer's failure files (DELETED_SUFFIXES), removed without being packed."""
+    paths, sandboxes, deleted = [], {}, []
 
     def relative(path):
         return os.path.relpath(path, experiment_dir)
@@ -147,9 +151,12 @@ def files_to_pack(experiment_dir, data_folders):
             dirs.sort()
             for name in sorted(names):
                 path = os.path.join(root, name)
-                if os.path.isfile(path) and ((root == run_dir and name in PACKED_RUN_FILES)
-                                             or name.endswith(PACKED_SUFFIXES)):
+                if not os.path.isfile(path):
+                    continue
+                if root == run_dir and name in PACKED_RUN_FILES:
                     paths.append(relative(path))
+                elif name.endswith(DELETED_SUFFIXES):
+                    deleted.append(relative(path))
         sandbox_dir = os.path.join(run_dir, "sandbox")
         if not os.path.isdir(sandbox_dir):
             continue
@@ -170,7 +177,7 @@ def files_to_pack(experiment_dir, data_folders):
         sandboxes[relative(run_dir)] = {"data": data_dir if dropped else None,
                                         "data_fingerprint": data_folders.fingerprint(data_dir) if dropped else None,
                                         "dropped_inputs": dropped}
-    return paths, sandboxes
+    return paths, sandboxes, deleted
 
 
 def check_removable(experiment_dir, paths, sandboxes):
@@ -210,18 +217,25 @@ def _megabytes(count):
 
 
 def archive(experiment_dir, log=print):
-    """Pack experiment_dir's bulky run files (see the module docstring). Returns the manifest, or None if there was
-    nothing to pack. The caller makes sure no loop is using the folder."""
+    """Pack experiment_dir's bulky run files and delete the scorer's failure files (see the module docstring).
+    Returns the manifest, or None if there was nothing to pack. The caller makes sure no loop is using the folder."""
     experiment_dir = os.path.abspath(experiment_dir)
     archive_path = os.path.join(experiment_dir, ARCHIVE_NAME)
     if os.path.exists(archive_path):
         restore(experiment_dir, log)            # one archive per experiment: the old one goes into the new one
     data_folders = DataFolders()
-    paths, sandboxes = files_to_pack(experiment_dir, data_folders)
-    if not paths and not sandboxes:
+    paths, sandboxes, deleted = files_to_pack(experiment_dir, data_folders)
+    if not paths and not sandboxes and not deleted:
         log("archive: nothing to pack")
         return None
-    check_removable(experiment_dir, paths, sandboxes)
+    check_removable(experiment_dir, paths + deleted, sandboxes)
+    deleted_bytes = sum(os.path.getsize(os.path.join(experiment_dir, path)) for path in deleted)
+    deleted_note = f"deleted {len(deleted)} scorer failure files ({_megabytes(deleted_bytes)})"
+    if not paths and not sandboxes:
+        for path in deleted:
+            os.remove(os.path.join(experiment_dir, path))
+        log(f"archive: nothing to pack; {deleted_note}")
+        return None
     entries = [{"path": path, "bytes": os.path.getsize(os.path.join(experiment_dir, path)),
                 "sha256": sha256_of_file(os.path.join(experiment_dir, path))} for path in paths]
     temporary = archive_path + ".tmp"
@@ -235,17 +249,21 @@ def archive(experiment_dir, log=print):
             os.remove(temporary)
         raise
     manifest = {"created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "files": entries, "sandboxes": sandboxes,
-                "bytes": sum(entry["bytes"] for entry in entries), "archive_bytes": os.path.getsize(temporary)}
+                "bytes": sum(entry["bytes"] for entry in entries), "archive_bytes": os.path.getsize(temporary),
+                "deleted_files": len(deleted), "deleted_bytes": deleted_bytes}
     _write_json_atomically(os.path.join(experiment_dir, MANIFEST_NAME), manifest)    # before the archive is in place
     os.replace(temporary, archive_path)
     for entry in entries:
         os.remove(os.path.join(experiment_dir, entry["path"]))
     for run in sandboxes:
         shutil.rmtree(os.path.join(experiment_dir, run, "sandbox"))
+    for path in deleted:
+        os.remove(os.path.join(experiment_dir, path))
     dropped = sum(sandbox["dropped_inputs"] for sandbox in sandboxes.values())
     log(f"archive: packed {len(entries)} files ({_megabytes(manifest['bytes'])}) into {ARCHIVE_NAME} "
         f"({_megabytes(manifest['archive_bytes'])}); removed {len(sandboxes)} sandboxes"
-        + (f" and {dropped} unchanged recordings in them (copied back on restore)" if dropped else ""))
+        + (f" and {dropped} unchanged recordings in them (copied back on restore)" if dropped else "")
+        + (f"; {deleted_note}" if deleted else ""))
     return manifest
 
 

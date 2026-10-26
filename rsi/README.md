@@ -83,13 +83,13 @@ Everything goes in `rsi/experiments/<date>_<time>/` (or `--out`).
 | `monitor.jsonl`, `summary.md` | for you only: grid M (the hidden monitor) and grid A's held-out runs beside grid B for both arms of every block, with the M - B gap. The over-optimization signal is the candidate's gap rising while its B improves, and the current harness's B from block to block shows drift |
 | `cycles.jsonl` | for you only: for every candidate, the earlier harnesses (other than its parent) it returns to, the whole harness by fingerprint or a file it changed by content (trailing whitespace and blank lines ignored). A match with a rejected candidate is a repeated proposal; a match with h000 or an older kept harness is a step back. `summary.md` shows them in its repeats column |
 | `config.json`, `state.json`, `loop.log`, `loop.lock` | settings and resumes, where the loop stands, its log, and the lock while it runs |
-| `archive.tar.xz`, `archive_manifest.json` | written when the loop ends on its own: every run's `transcript.json` and `checkpoint.json`, the scorer's `*_partial.npz` and `*.debug.log`, and what a leftover sandbox holds beyond unchanged copies of the recordings, packed into one file, with a manifest of sizes and hashes. `--resume` unpacks it first |
+| `archive.tar.xz`, `archive_manifest.json` | written when the loop ends on its own: every run's `transcript.json` and `checkpoint.json`, and what a leftover sandbox holds beyond unchanged copies of the recordings, packed into one file, with a manifest of sizes and hashes. The scorer's `*_partial.npz` and `*.debug.log` (failed closed-loop tasks only; nothing reads them, and they were most of an experiment's size) are deleted, not packed. `--resume` unpacks the archive first |
 
 Nothing reads `monitor.jsonl`, `cycles.jsonl` or `summary.md` back into the loop.
 
 ### Packing a finished experiment
 
-A run's transcript is the one bulky file the loop needs while it runs (the updater reads the best and worst ones), so nothing is packed until the loop ends. When it ends on its own (`--iters`, `--patience`, `--max-usd`), `rsi/experiment_archive.py` packs the bulky per-run files into `archive.tar.xz` and removes them, after reading every file back out of the archive and checking its hash. A loop stopped by Ctrl-C, a signal or exit code 3 is left as it is; pack it by hand when you are done with it:
+A run's transcript is the one bulky file the loop needs while it runs (the updater reads the best and worst ones), so nothing is packed until the loop ends. When it ends on its own (`--iters`, `--patience`, `--max-usd`), `rsi/experiment_archive.py` packs the bulky per-run files into `archive.tar.xz` and removes them, after reading every file back out of the archive and checking its hash, and deletes the scorer's failure files. Scoring a run's `submission.json` again writes those again if you ever need them. An archive made before this change still holds them; packing it again deletes them. A loop stopped by Ctrl-C, a signal or exit code 3 is left as it is; pack it by hand when you are done with it:
 
 ```bash
 $PY rsi/experiment_archive.py rsi/experiments/run1              # pack

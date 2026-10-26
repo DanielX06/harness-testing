@@ -1,5 +1,6 @@
-"""Checks of experiment_archive.py on a small made-up experiment folder: what is packed and what stays, a pack and
-restore that gives back every byte, a leftover sandbox rebuilt from its data folder, and the failures that must
+"""Checks of experiment_archive.py on a small made-up experiment folder: what is packed, what is deleted and what
+stays, a pack and restore that gives back every packed byte, an older archive that still holds the scorer's failure
+files, a leftover sandbox rebuilt from its data folder, and the failures that must
 leave everything where it was. No API call, no Docker, no ANDES.
 
     python rsi/tests/test_experiment_archive.py
@@ -87,11 +88,16 @@ manifest = A.archive(experiment, messages.append)
 packed = {entry["path"] for entry in manifest["files"]}
 check(os.path.exists(os.path.join(experiment, A.ARCHIVE_NAME)) and os.path.exists(os.path.join(experiment, A.MANIFEST_NAME)),
       "packing writes archive.tar.xz and archive_manifest.json")
-check(packed == {"runs/h000_baseline/r1/transcript.json", "runs/h000_baseline/r1/score/andes/grid_B__B_vref_partial.npz",
-                 "runs/h000_baseline/r1/score/andes/grid_B__B_vref.debug.log", "runs/h001_test/r2/checkpoint.json",
+DELETED = {"runs/h000_baseline/r1/score/andes/grid_B__B_vref_partial.npz",
+           "runs/h000_baseline/r1/score/andes/grid_B__B_vref.debug.log"}
+check(packed == {"runs/h000_baseline/r1/transcript.json", "runs/h001_test/r2/checkpoint.json",
                  "runs/h001_test/r2/transcript.json", "runs/h001_test/r2/sandbox/tools/helper.py",
                  "runs/h001_test/r2/sandbox/submission.json", "runs/h001_test/r2/sandbox/train/a.csv"},
-      "packed: transcripts, checkpoints, failure trajectories, DEBUG tails, and a sandbox's own and edited files")
+      "packed: transcripts, checkpoints, and a sandbox's own and edited files")
+check(not packed & DELETED and all(not os.path.exists(os.path.join(experiment, path)) for path in DELETED)
+      and manifest["deleted_files"] == 2 and manifest["deleted_bytes"] == 5000 + len("DEBUG\n" * 500)
+      and any("deleted 2 scorer failure files" in message for message in messages),
+      "the scorer's failure trajectories and DEBUG tails are deleted, not packed, and the manifest counts them")
 check(not any("__pycache__" in path for path in packed), "a sandbox's __pycache__ is not packed")
 check(manifest["sandboxes"]["runs/h001_test/r2"]["dropped_inputs"] == 3,
       "a sandbox's unchanged recordings are dropped, an edited one is packed")
@@ -99,7 +105,7 @@ check(all(not os.path.exists(os.path.join(experiment, path)) for path in packed)
       and not os.path.exists(os.path.join(experiment, "runs", "h001_test", "r2", "sandbox")),
       "the packed files and the leftover sandbox are removed")
 kept = set(snapshot(experiment))
-check(kept == set(before) - packed - {"runs/h001_test/r2/sandbox/dataset.json", "runs/h001_test/r2/sandbox/train/b.csv",
+check(kept == set(before) - packed - DELETED - {"runs/h001_test/r2/sandbox/dataset.json", "runs/h001_test/r2/sandbox/train/b.csv",
                                       "runs/h001_test/r2/sandbox/val/c.csv",
                                       "runs/h001_test/r2/sandbox/tools/__pycache__/helper.cpython-312.pyc"},
       "everything else stays: meta, submission, final.md, scores, INFO logs, solver logs, candidates/, summary")
@@ -108,8 +114,10 @@ check(not os.path.exists(os.path.join(experiment, A.ARCHIVE_NAME + ".tmp")), "no
 # 2. restoring gives back every byte
 pycache = "runs/h001_test/r2/sandbox/tools/__pycache__/helper.cpython-312.pyc"
 before.pop(pycache)
+for path in DELETED:
+    before.pop(path)
 check(A.restore(experiment, messages.append) and snapshot(experiment) == before,
-      "restoring gives back every file but bytecode, the sandbox's recordings copied from its data folder")
+      "restoring gives back every packed file, the sandbox's recordings copied from its data folder")
 check(not os.path.exists(os.path.join(experiment, A.ARCHIVE_NAME)) and not os.path.exists(os.path.join(experiment, A.MANIFEST_NAME)),
       "restoring removes the archive and its manifest")
 check(A.restore(experiment, messages.append) is False, "restoring a folder with no archive does nothing")
@@ -166,10 +174,34 @@ shutil.move(data_dir + "_elsewhere", data_dir)
 moved_after = snapshot(moved)
 check(any("is not on this machine" in message for message in messages)
       and all(moved_after.get(path) == moved_before[path] for path in moved_before
-              if not path.endswith(("dataset.json", "b.csv", "c.csv", ".pyc"))),
+              if not path.endswith(("dataset.json", "b.csv", "c.csv", ".pyc") + A.DELETED_SUFFIXES)),
       "without its data folder, a sandbox is restored without its recordings, with a warning")
 
-# 7. a folder this user cannot empty (root-owned, as the Docker container leaves it on Linux) stops packing first
+# 7. an archive made before the failure files were deleted gives them back on restore; packing again deletes them
+legacy = make_experiment("legacy", data_dir)
+legacy_before = snapshot(legacy)
+current_files_to_pack = A.files_to_pack
+A.files_to_pack = lambda folder, data: (lambda found: (found[0] + found[2], found[1], []))(current_files_to_pack(folder, data))
+old_manifest = A.archive(legacy, messages.append)                  # packs them, as the archiver used to
+A.files_to_pack = current_files_to_pack
+check(DELETED <= {entry["path"] for entry in old_manifest["files"]}, "(setup) the old-style archive holds the failure files")
+A.restore(legacy, messages.append)
+check(all(snapshot(legacy).get(path) == legacy_before[path] for path in DELETED),
+      "restoring an old-style archive gives the failure files back")
+A.archive(legacy, messages.append)
+again = json.load(open(os.path.join(legacy, A.MANIFEST_NAME)))
+check(not DELETED & {entry["path"] for entry in again["files"]}
+      and all(not os.path.exists(os.path.join(legacy, path)) for path in DELETED),
+      "packing an old-style archive again deletes them instead of packing them")
+cleanup_only = make_experiment("cleanup_only", data_dir)
+for path in ("runs/h000_baseline/r1/transcript.json", "runs/h001_test/r2/checkpoint.json", "runs/h001_test/r2/transcript.json"):
+    os.remove(os.path.join(cleanup_only, path))
+shutil.rmtree(os.path.join(cleanup_only, "runs", "h001_test", "r2", "sandbox"))
+check(A.archive(cleanup_only, messages.append) is None and not os.path.exists(os.path.join(cleanup_only, A.ARCHIVE_NAME))
+      and all(not os.path.exists(os.path.join(cleanup_only, path)) for path in DELETED),
+      "with nothing to pack, the failure files are still deleted and no archive is written")
+
+# 8. a folder this user cannot empty (root-owned, as the Docker container leaves it on Linux) stops packing first
 locked = make_experiment("locked", data_dir)
 locked_tools = os.path.join(locked, "runs", "h001_test", "r2", "sandbox", "tools")
 if os.geteuid() != 0:
@@ -184,7 +216,7 @@ if os.geteuid() != 0:
     check(stopped_early and snapshot(locked) == locked_before and not os.path.exists(os.path.join(locked, A.ARCHIVE_NAME)),
           "a sandbox folder this user cannot empty stops packing before anything is written, with the chown to run")
 
-# 8. nothing to pack, and paths outside the folder
+# 9. nothing to pack, and paths outside the folder
 empty = os.path.join(work, "empty")
 write(os.path.join(empty, "config.json"), "{}")
 check(A.archive(empty, messages.append) is None and not os.path.exists(os.path.join(empty, A.ARCHIVE_NAME)),
