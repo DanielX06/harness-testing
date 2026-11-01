@@ -2,6 +2,62 @@
 
 The recursive self-improvement loop for the solver's harness. An updater model reads how the current harness did and proposes one change, fresh solver runs of the candidate and of the current harness, side by side, decide whether the change stays, and the loop repeats. Haiku 5.5 at low effort is both the solver and the updater unless you say otherwise.
 
+## Commands
+
+Everything runs from `Harness_testing/` with the project's Python (on the Mac, `PY=../.venv/bin/python`). The loop and a proposal need `ANTHROPIC_API_KEY` and Docker with the solver's image (`docker build -t harness-v0-py solver`). The tests need no API key, no Docker and no ANDES.
+
+Tests:
+
+```bash
+$PY rsi/tests/test_rsi_experiment.py
+$PY rsi/tests/test_harness_proposal.py
+$PY rsi/tests/test_updater_context.py
+```
+
+Starting an experiment. The defaults are Haiku 5.5 at low effort as solver and updater, clean data, `scorer/config_rsi.json`, and a folder named for the date and time under `rsi/experiments/`:
+
+```bash
+$PY rsi/rsi_experiment.py --iters 2 --baseline-runs 4 --pairs 4 --early-stop-pairs 2 --confirm-pairs 4   # smoke test
+$PY rsi/rsi_experiment.py --iters 30                                                                    # the real thing
+$PY rsi/rsi_experiment.py --iters 40 --parallel 4 --updater-model claude-sonnet-5-5 --updater-effort low --out rsi/experiments/<name>   # Sonnet as updater, as in run2
+```
+
+`--solver-model` and `--solver-effort` take the short names (`opus`, `high`) or numbers, as `solver_run.py` does. `--updater-model` needs the full model id.
+
+Resuming and extending:
+
+```bash
+$PY rsi/rsi_experiment.py --resume rsi/experiments/<name>              # carry on where it stopped
+$PY rsi/rsi_experiment.py --resume rsi/experiments/<name> --iters 40   # extend a finished experiment
+```
+
+Running unattended, in tmux on the desktop (in WSL). Any non-zero exit leads to a resume, up to five, ten minutes apart. On a Mac, start it under `caffeinate -i` so the machine doesn't sleep:
+
+```bash
+EXP=rsi/experiments/<name>
+$PY rsi/rsi_experiment.py --iters 40 --parallel 4 --workers 4 --out $EXP || \
+  for i in 1 2 3 4 5; do sleep 600; $PY rsi/rsi_experiment.py --resume $EXP && break; done
+```
+
+Packing an experiment that was stopped by hand (one that ends on its own is packed for you):
+
+```bash
+$PY rsi/experiment_archive.py rsi/experiments/<name>              # pack
+$PY rsi/experiment_archive.py rsi/experiments/<name> --restore    # unpack
+```
+
+One proposal, or one updater context, by hand:
+
+```bash
+$PY rsi/harness_proposal.py --runs runs/<batch> --harness harness_v0/harness --out rsi/candidates/hNNN
+$PY rsi/updater_context.py --runs rsi/tests/fixtures/oct13_clean_batch --harness rsi/tests/fixtures/harness_v0_oct13 --out rsi/previews/oct13_clean
+$PY rsi/updater_context.py ... --scope all               # edit-anything scope: system.md becomes editable and the device-generic rule goes
+$PY rsi/updater_context.py ... --history history.jsonl   # with earlier attempts
+$PY rsi/updater_context.py ... --count-tokens            # exact count from the API, free, needs ANTHROPIC_API_KEY
+```
+
+## Files
+
 | file | what it is |
 |---|---|
 | `rsi_experiment.py` | the loop: a baseline of the starting harness, then propose, a test block, a confirmation block, keep or not, for `--iters` iterations; `--resume` carries on an interrupted experiment |
@@ -14,16 +70,9 @@ The recursive self-improvement loop for the solver's harness. An updater model r
 | `tests/fixtures/` | the ten Oct 13 clean runs and the harness that made them (fingerprint f141be203a8a40f4), so the tests never depend on `harness_v0/runs` |
 | `previews/oct13_clean/` | the context built from the Oct 13 clean batch in `tests/fixtures/`: `context.md` (readable, with the diagram as a placeholder line) and `stats.json` |
 
-Commands below run from `Harness_testing/` with the project's Python (on the Mac, `PY=../.venv/bin/python`). The tests need no API key, no Docker and no ANDES: `$PY rsi/tests/test_rsi_experiment.py` and the other two.
+## How the loop runs
 
-## Running the loop
-
-```bash
-$PY rsi/rsi_experiment.py --iters 2 --baseline-runs 4 --pairs 4 --early-stop-pairs 2 --confirm-pairs 4   # smoke test
-$PY rsi/rsi_experiment.py --iters 30                                                                    # the real thing
-```
-
-It needs `ANTHROPIC_API_KEY` and Docker with the solver's image (`harness-v0-py`, built from `solver/Dockerfile`). The loop copies the starting harness (`--start`, default `harness_v0/harness`) to `candidates/h000` and makes `--baseline-runs` (20) runs of it, so the first updater has something to read. Each iteration then goes like this.
+The loop copies the starting harness (`--start`, default `harness_v0/harness`) to `candidates/h000` and makes `--baseline-runs` (20) runs of it, so the first updater has something to read. Each iteration then goes like this.
 
 1. Propose. `harness_proposal.py` shows the updater the newest `--newest-runs` (20) runs of the current harness, from every block it has run in, and the history of earlier attempts. It edits a copy, and a copy that fails a check is never run.
 2. Test block. Pairs of fresh runs, one of the candidate and one of the current harness in each pair, started together; which one starts first alternates. After `--early-stop-pairs` (8) pairs, a candidate whose mean composite on grid B is not below the current harness's is rejected early. Otherwise, after `--pairs` (20) pairs, it passes if its mean is lower and a one-sided permutation test on this block's 20 + 20 runs gives p ≤ `--alpha` (0.10).
@@ -50,24 +99,11 @@ The smallest p a block can give is 1/C(2n, n) for n pairs: 1/6 for 2, 1/20 for 3
 
 A run that ends with a failure score (an invalid submission, a model that fails in simulation) is a result and counts. A run that stops for a reason outside the harness is not: an API outage longer than the 35 minutes `solver/solver_run.py` rides out, Docker failing, the scorer itself crashing. The loop resumes such a run from its checkpoint until it has failed more than `--max-resumes` (2) times, then replaces it with a new run for the same pair; the abandoned run's spend still counts. A conversation that outgrows the model's context window ends the run like a final message without a json block (the sandbox's `submission.json` is scored, or it scores 2), since that is the harness's doing. After `--max-failures-in-a-row` (6) failed sessions with no run finishing in between, or when Docker cannot run the candidate's checker, the loop stops with exit code 3 so you can fix the cause.
 
-```bash
-$PY rsi/rsi_experiment.py --resume rsi/experiments/20261022_090000               # carry on where it stopped
-$PY rsi/rsi_experiment.py --resume rsi/experiments/20261022_090000 --iters 40    # extend a finished experiment
-```
-
 Everything is on disk, and a resumed loop decides exactly what an uninterrupted one would. `history.jsonl` is the record of finished iterations, and its line for an iteration is written last. A saved `proposal.json` is reused rather than paid for again. Scored runs are kept, crashed and stopped runs are resumed, and runs still going from a loop that was killed are waited for (the loop checks that the pid in `meta.json` is still a `solver_run.py` process on that run). Decisions use fixed pairs, the first `--early-stop-pairs` and then all `--pairs`, so it does not matter which runs finished first. A proposal cut off before `proposal.json` was written is moved to `candidates/hNNN.interrupted_<time>` and made again, and its updater spend, from its `transcript.json`, still counts. Spend is recomputed from every run's `meta.json` and every proposal each time, so `--max-usd` holds across resumes. `--resume` accepts only `--iters`, `--patience`, `--max-usd`, `--parallel`, `--workers`, `--updater-max-usd` and `--max-resumes`; anything else would change the experiment, and `config.json` records each resume and what it changed.
 
 `loop.lock` holds the running loop's pid, and a second loop refuses the folder while that pid is a live `rsi_experiment.py` process. Stopping the loop (Ctrl-C, `kill`, closing its terminal) stops its solver runs too: each runs in its own session, and the loop sends them SIGTERM, which `solver_run.py` records as `stopped` before it saves and exits.
 
-For a run that should carry on while you're away, use tmux on the desktop (in WSL) with a retry loop. The loop exits 0 when it finishes or stops on patience or budget, 3 when it stops on failed runs, and something else when it crashes; any non-zero exit leads to a resume, up to five, ten minutes apart:
-
-```bash
-EXP=rsi/experiments/long1
-$PY rsi/rsi_experiment.py --iters 40 --parallel 4 --workers 4 --out $EXP || \
-  for i in 1 2 3 4 5; do sleep 600; $PY rsi/rsi_experiment.py --resume $EXP && break; done
-```
-
-A machine reboot (Windows Update) ends tmux too, so after one, open WSL, start Docker Desktop and run the `--resume` line by hand. On a Mac, start the loop under `caffeinate -i` so the machine doesn't sleep.
+For a run that should carry on while you're away, use the unattended command under Commands. The loop exits 0 when it finishes or stops on patience or budget, 3 when it stops on failed runs, and something else when it crashes, and the retry loop resumes on any non-zero exit. A machine reboot (Windows Update) ends tmux too, so after one, open WSL, start Docker Desktop and run the `--resume` line by hand.
 
 ### What the experiment folder holds
 
@@ -89,22 +125,11 @@ Nothing reads `monitor.jsonl`, `cycles.jsonl` or `summary.md` back into the loop
 
 ### Packing a finished experiment
 
-A run's transcript is the one bulky file the loop needs while it runs (the updater reads the best and worst ones), so nothing is packed until the loop ends. When it ends on its own (`--iters`, `--patience`, `--max-usd`), `rsi/experiment_archive.py` packs the bulky per-run files into `archive.tar.xz` and removes them, after reading every file back out of the archive and checking its hash, and deletes the scorer's failure files. Scoring a run's `submission.json` again writes those again if you ever need them. An archive made before this change still holds them; packing it again deletes them. A loop stopped by Ctrl-C, a signal or exit code 3 is left as it is; pack it by hand when you are done with it:
-
-```bash
-$PY rsi/experiment_archive.py rsi/experiments/run1              # pack
-$PY rsi/experiment_archive.py rsi/experiments/run1 --restore    # unpack
-```
-
-Packing by hand is safe whenever the loop is not running. A leftover sandbox keeps only what is not an unchanged copy of its data folder, and the recordings are copied back from that folder on restore, so `--resume` (which unpacks first) carries stopped runs on as before. What stays unpacked (`meta.json`, `submission.json`, `final.md`, the scores, the INFO logs, `candidates/` and the experiment-level files) is what the experiments repository commits; the archive stays on the machine that ran the loop.
+A run's transcript is the one bulky file the loop needs while it runs (the updater reads the best and worst ones), so nothing is packed until the loop ends. When it ends on its own (`--iters`, `--patience`, `--max-usd`), `rsi/experiment_archive.py` packs the bulky per-run files into `archive.tar.xz` and removes them, after reading every file back out of the archive and checking its hash, and deletes the scorer's failure files. Scoring a run's `submission.json` again writes those again if you ever need them. An archive made before this change still holds them; packing it again deletes them. A loop stopped by Ctrl-C, a signal or exit code 3 is left as it is; pack it by hand with the command under Commands when you are done with it. Packing by hand is safe whenever the loop is not running. A leftover sandbox keeps only what is not an unchanged copy of its data folder, and the recordings are copied back from that folder on restore, so `--resume` (which unpacks first) carries stopped runs on as before. What stays unpacked (`meta.json`, `submission.json`, `final.md`, the scores, the INFO logs, `candidates/` and the experiment-level files) is what the experiments repository commits; the archive stays on the machine that ran the loop.
 
 ## Proposing a candidate by hand
 
-```bash
-$PY rsi/harness_proposal.py --runs runs/batch_20261022_101500_haiku_low_clean --harness harness_v0/harness --out rsi/candidates/h002
-```
-
-It needs `ANTHROPIC_API_KEY`, and Docker with the solver's image for the smoke run. The updater is Haiku 5.5 at low effort unless `--model` and `--effort` say otherwise, stops after 20 turns (`--max-turns`) or $2 (`--max-usd`), and is priced with `common/api_pricing.py`. Its edits go into a copy of the harness. Paths outside the scope's editable files are refused and the refusal goes back to it as a tool error, as does a `finish` before any edit or before a complete report. The report goes through `write_proposal`, one markdown string with five headings (`evidence`, `root_cause`, `change`, `predicted_effect`, `at_risk`), saved as `proposal.md` beside `harness/`; `finish` takes no arguments and parses that file, naming any heading that is missing, repeated or empty. (Until Oct 22 `finish` took the five fields as separate parameters, and Haiku at low effort kept leaking one parameter's markup into another, then copying its own broken call on every retry.) If it stops without calling `finish`, it gets one reminder.
+`harness_proposal.py` needs `ANTHROPIC_API_KEY`, and Docker with the solver's image for the smoke run. The updater is Haiku 5.5 at low effort unless `--model` and `--effort` say otherwise, stops after 20 turns (`--max-turns`) or $2 (`--max-usd`), and is priced with `common/api_pricing.py`. Its edits go into a copy of the harness. Paths outside the scope's editable files are refused and the refusal goes back to it as a tool error, as does a `finish` before any edit or before a complete report. The report goes through `write_proposal`, one markdown string with five headings (`evidence`, `root_cause`, `change`, `predicted_effect`, `at_risk`), saved as `proposal.md` beside `harness/`; `finish` takes no arguments and parses that file, naming any heading that is missing, repeated or empty. (Until Oct 22 `finish` took the five fields as separate parameters, and Haiku at low effort kept leaking one parameter's markup into another, then copying its own broken call on every retry.) If it stops without calling `finish`, it gets one reminder.
 
 `--out` gets `harness/` (the candidate, ready for `solver/solver_run.py --harness`), `proposal.md`, `proposal.json`, `diff.patch`, `transcript.json`, and the `context.md` and `context_stats.json` it was given. The report and the manifest parsed from it live in `proposal.md` and `proposal.json`, outside `harness/`, so it doesn't change the candidate's fingerprint. `status` is `ok` only if the candidate passes every check before any solver run.
 
@@ -116,14 +141,7 @@ The other statuses are `invalid` (a check failed), `no_change`, `no_finish` and 
 
 ## Building a context by hand
 
-```bash
-$PY rsi/updater_context.py --runs rsi/tests/fixtures/oct13_clean_batch --harness rsi/tests/fixtures/harness_v0_oct13 --out rsi/previews/oct13_clean
-$PY rsi/updater_context.py ... --scope all               # edit-anything scope: system.md becomes editable and the device-generic rule goes
-$PY rsi/updater_context.py ... --history history.jsonl   # with earlier attempts
-$PY rsi/updater_context.py ... --count-tokens            # exact count from the API, free, needs ANTHROPIC_API_KEY
-```
-
-`--runs` takes run folders or batch folders, and the table shows the newest 20 (`--last`). Runs that did not finish (still going, crashed or stopped) are left out, since they say nothing about the harness. The build stops if any run was made with a different harness than `--harness` (it compares the fingerprint in each `meta.json` with the folder's, computed by `common/harness_files.py`), or if the runs mix models, efforts or noise settings. It warns if a run got a different task prompt than today's `solver/task_prompt.md`. It needs only the standard library (`anthropic` only for `--count-tokens`), and it reads the noise sentences, the solver's tool, the output limit and the budget from `solver/solver_run.py` and the forbidden names from `common/hidden_names.py`, so none of them can drift apart.
+`updater_context.py`'s `--runs` takes run folders or batch folders, and the table shows the newest 20 (`--last`). Runs that did not finish (still going, crashed or stopped) are left out, since they say nothing about the harness. The build stops if any run was made with a different harness than `--harness` (it compares the fingerprint in each `meta.json` with the folder's, computed by `common/harness_files.py`), or if the runs mix models, efforts or noise settings. It warns if a run got a different task prompt than today's `solver/task_prompt.md`. It needs only the standard library (`anthropic` only for `--count-tokens`), and it reads the noise sentences, the solver's tool, the output limit and the budget from `solver/solver_run.py` and the forbidden names from `common/hidden_names.py`, so none of them can drift apart.
 
 ## What the updater sees
 
