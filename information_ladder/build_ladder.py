@@ -11,6 +11,7 @@ test_cases/grid_A and ignored by git. Nothing here needs ANDES.
 import argparse
 import filecmp
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -139,6 +140,27 @@ def check_names(folder):
                 raise AssertionError(f"forbidden word {match.group(0)!r} in {path}")
 
 
+BLOCK_REGION = re.compile(r"# >>> block (\w+)/(\w+)\n.*?# <<< block \1/\2\n\n?", re.S)
+
+
+def menu_source_with_only(menu, source):
+    """structure_menu.py with every block the rung does not offer cut out, code and description both, so a solver
+    that reads the file learns nothing about the blocks it was not given."""
+    kept = []
+
+    def keep_or_cut(match):
+        slot, name = match.group(1), match.group(2)
+        if name in menu.get(slot, []):
+            kept.append((slot, name))
+            return match.group(0)
+        return ""
+    trimmed = BLOCK_REGION.sub(keep_or_cut, source)
+    wanted = {(slot, name) for slot, names in menu.items() for name in names}
+    if set(kept) != wanted:
+        raise AssertionError(f"structure_menu.py block markers changed: kept {sorted(kept)}, wanted {sorted(wanted)}")
+    return trimmed
+
+
 def v0_method_with_grid_check():
     """harness_v0's method.md with its step 4 and step 7 pointed at the grid-equivalent replay."""
     lines = (STARTING_HARNESS_DIR / "method.md").read_text().splitlines()
@@ -174,6 +196,8 @@ def build_harness(rung, spec, target):
         shutil.copyfile(TOOL_SOURCES / tool, target / "tools" / tool)
     if "menu" in spec:
         (target / "tools" / "menu_options.json").write_text(json.dumps(spec["menu"], indent=1) + "\n")
+        menu_file = target / "tools" / "structure_menu.py"
+        menu_file.write_text(menu_source_with_only(spec["menu"], menu_file.read_text()))
     check_names(target)
     return harness_fingerprint(target)
 

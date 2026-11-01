@@ -207,5 +207,14 @@ with tempfile.TemporaryDirectory() as folder:
                                  "droop_with_power_loop", "--qv", "droop", "--voltage", "pi_voltage_loop", "--inner",
                                  "ideal", "--out", os.path.join(folder, "x.json")], capture_output=True, text=True)
     check("must be one of" in restricted.stdout, "r5's menu refuses the true blocks")
+    r5_source = (restricted_harness / "tools" / "structure_menu.py").read_text()
+    check(not any(word in r5_source for word in ("power_loop", "reactive_loop", "Kip", "Kiq", "Tpl", "Tql")),
+          "r5's copy of structure_menu.py holds no trace of the true blocks")
+    r6_harness, _ = run_rung.rung_paths("r6_structure_given")
+    r6_source = (r6_harness / "tools" / "structure_menu.py").read_text()
+    r6_blocks = sorted(line.split()[-1] for line in r6_source.splitlines() if line.startswith("# >>> block"))
+    check(r6_blocks == ["inner/pi_current_loop", "pf/droop_with_power_loop", "qv/droop_with_reactive_loop",
+                        "voltage/pi_voltage_loop"] and "def _pf_inertia" not in r6_source,
+          "r6's copy of structure_menu.py holds only the documented structure")
 
 print(f"\n{passed} checks passed")

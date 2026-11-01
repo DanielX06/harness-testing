@@ -23,7 +23,7 @@ r4 against r5 is the "menu with and without the true form" ablation. r4 against 
 ```bash
 PY=../.venv/bin/python
 $PY information_ladder/build_ladder.py               # harness folders (committed) and data/ (rebuilt, gitignored), about 15 s
-$PY information_ladder/tests/test_ladder.py          # 33 checks, about a minute; no API, Docker or ANDES
+$PY information_ladder/tests/test_ladder.py          # 35 checks, about a minute; no API, Docker or ANDES
 bash information_ladder/run_ladder.sh haiku low 10 2                         # every rung, 10 runs each
 bash information_ladder/run_ladder.sh sonnet low 10 2 r0_v0 r1_grid_equivalent   # the Sonnet-low baseline
 $PY information_ladder/summarize_ladder.py runs/ladder_<haiku> runs/ladder_<sonnet>   # both in one table
@@ -40,7 +40,7 @@ Cost, roughly: Haiku-low runs have cost $0.02 to $0.04, so 70 runs should be a f
 
 **The internal signals are reconstructed, not simulated.** REGF1's controls are a feed-forward chain from the measured P and Q (filters, power loops, frequency command, internal angle). So `internal_signals.py` computes every column exactly from the recorded columns plus the true parameters, with the trapezoid rule on the 1 ms grid. They agree with the true model's own states to an RMS of about 1e-5. Being functions of the recording, they also stay consistent with it through the fault, where re-simulating wouldn't. If you'd rather have ANDES's own variables, that's a change to `build_test_grids.simulate_run`.
 
-**The menu is device-generic but was written knowing REGF1.** `droop_with_power_loop` and `droop_with_reactive_loop` are REGF1's PI power-limit loops. The test checks that the true combination, with the parameters moved to the device base (×9 or ÷9), equals the truth spec to 1e-9 pu. The defaults are generic values (5% droops and the like), not the truth. `inertia` is a VSM-style block, so the same menu should cover REGF2 when that case exists.
+**The menu is device-generic but was written knowing REGF1.** `droop_with_power_loop` and `droop_with_reactive_loop` are REGF1's PI power-limit loops. The test checks that the true combination, with the parameters moved to the device base (×9 or ÷9), equals the truth spec to 1e-9 pu. The defaults are generic values (5% droops and the like), not the truth. Each rung's copy of `structure_menu.py` carries only that rung's blocks, code and descriptions both (the builder cuts the rest out between the `>>> block` markers), so a solver that reads the file in r5 finds nothing of the true blocks. `inertia` is a VSM-style block, so the same menu should cover REGF2 when that case exists.
 
 **The fitter is slow and the parameters trade off.** Each call fits for about 100 s (under the 120 s tool limit) and is resumed with `--start`. In a test from defaults, three calls on two short windows gave droops within 0.2% (P-f) and 4.5% (Q-V) of the truth, with validation replay errors of 1 to 2% of flat. The individual P-path parameters didn't match the truth, though (m against Kpp, for example). Choosing informative windows is left to the solver.
 
