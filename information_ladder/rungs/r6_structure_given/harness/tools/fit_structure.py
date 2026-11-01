@@ -69,6 +69,7 @@ class StructureFit:
         self.free = [name for name, value in self.params.items() if name not in fixed and value > 0]
         self.best = (np.inf, dict(self.params), None)
         self.evaluations = 0
+        self.starting_cost = None
 
     def window_errors(self, params):
         """Per window: (P error, Q error) as rmse / flat rmse; None for a window whose replay failed."""
@@ -92,8 +93,10 @@ class StructureFit:
         params = dict(self.params)
         params.update({name: float(np.exp(value)) for name, value in zip(self.free, log_values)})
         self.evaluations += 1
-        pieces = []
+        pieces, failed = [], []
         for window, errors in zip(self.windows, self.window_errors(params)):
+            if errors is None:
+                failed.append(window["name"])
             size = int(np.count_nonzero(window["counted"][::RESIDUAL_STRIDE])) * 2
             if errors is None:
                 pieces.append(np.full(size, FAILED_RESIDUAL))
@@ -103,8 +106,10 @@ class StructureFit:
         vector = np.concatenate(pieces) if pieces else np.zeros(1)
         vector = vector / np.sqrt(max(vector.size, 1))
         cost = float(vector @ vector)
+        if self.starting_cost is None:
+            self.starting_cost = cost
         if cost < self.best[0]:
-            self.best = (cost, params, None)
+            self.best = (cost, params, failed)
         return vector
 
     def run(self):
@@ -120,6 +125,8 @@ class StructureFit:
 
 
 def main(argv=None):
+    import warnings
+    warnings.filterwarnings("ignore", category=RuntimeWarning)     # overflow in a diverging trial model is reported, not printed
     parser = argparse.ArgumentParser(description="Fit a menu structure's parameters by grid-equivalent replay.")
     for slot in ("pf", "qv", "voltage"):
         parser.add_argument(f"--{slot}", required=True)
@@ -150,7 +157,7 @@ def main(argv=None):
     fit = StructureFit(choices, windows, options.x, options.every, start_params, set(options.fix),
                        started + options.seconds)
     stopped = fit.run()
-    cost, params, _ = fit.best
+    cost, params, failed_windows = fit.best
     with open(options.out, "w") as file:
         json.dump({"choices": choices, "params": params, "cost": cost, "stopped": stopped,
                    "evaluations": fit.evaluations, "windows": options.files, "x": options.x, "every": options.every},
@@ -158,6 +165,25 @@ def main(argv=None):
     print(f"{stopped} after {fit.evaluations} evaluations, {time.monotonic() - started:.0f} s; best cost {cost:.4g}")
     print(f"fitted parameters (saved to {options.out}): " + json.dumps({k: float(f'{v:.6g}') for k, v in params.items()}))
     print(f"free: {fit.free}")
+    if fit.starting_cost is not None:
+        print(f"cost at the starting parameters: {fit.starting_cost:.4g}")
+    print(f"rms error is about {np.sqrt(cost):.2f} of the flat prediction's (0 is a perfect fit, 1 no better than flat)")
+    if failed_windows:
+        print(f"WARNING: the replay failed on {failed_windows} even at the best parameters, so each counts as a "
+              f"fixed large error; drop or shorten that window, or try another structure.")
+    defaults = menu.parameter_defaults(choices)
+    collapsed = [name for name in fit.free if params[name] < 1e-3 * defaults[name] or params[name] > 1e3 * defaults[name]]
+    if collapsed:
+        print(f"NOTE: {collapsed} moved more than 1000x from their defaults; the fit is switching that part of the "
+              f"structure off or driving it to a limit, which usually means this structure does not match the data.")
+    one_gradient = len(fit.free) + 1
+    if fit.evaluations < 3 * one_gradient:
+        print(f"WARNING: only {fit.evaluations} evaluations; one gradient step for {len(fit.free)} parameters takes "
+              f"{one_gradient}, so these parameters are close to where they started. Use shorter windows (a few "
+              f"seconds each, fewer files) or a larger --every so each evaluation is faster.")
+    if stopped == "out of time":
+        print(f"NOT FINISHED: the fit was still running when time ran out. Run the same command again with "
+              f"--start {options.out} to carry on, until the best cost stops falling between calls.")
     return 0
 
 

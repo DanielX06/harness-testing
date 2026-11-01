@@ -46,11 +46,14 @@ def thevenin_source(voltage, angle, active_power, reactive_power, reactance):
 
 def replay_against_grid_equivalent(model, times, source, setpoint, reactance, initial_terminal, time_limit_s=110.0,
                                    newton_tolerance=1e-9, max_newton_iterations=10, output_bound=50.0,
-                                   state_bound=1e6):
+                                   state_bound=1e6, measured_terminal=None, substeps=8):
     """Returns (P, Q, V, theta, states), each one row per sample.
 
     model: a submission_parser BoundTerminalModel (TerminalModel(...).bind(operating_point))
     source: complex E(t) per sample; setpoint: Vset per sample; initial_terminal: (V0, theta0)
+    measured_terminal: optional (V, theta) arrays, used as Newton's first guess at each sample
+    A step whose Newton iteration fails is retried as `substeps` smaller steps with E interpolated linearly
+    (a fault or a switching event moves E by a lot within one sample).
     """
     started = time.monotonic()
     times = np.asarray(times, float)
@@ -76,22 +79,13 @@ def replay_against_grid_equivalent(model, times, source, setpoint, reactance, in
         mismatch = terminal - e - 1j * reactance * current
         return mismatch.real, mismatch.imag, float(p), float(q)
 
-    voltage, angle = float(initial_terminal[0]), float(initial_terminal[1])
-    out_p, out_q = np.empty(count), np.empty(count)
-    out_v, out_theta = np.empty(count), np.empty(count)
-    out_states = np.empty((count, n))
-    _, _, out_p[0], out_q[0] = residual_parts(state, voltage, angle, setpoint[0], source[0])
-    out_v[0], out_theta[0], out_states[0] = voltage, angle, state
-    previous_rates = rates(state, [voltage, angle, setpoint[0]])
-    jacobian_inverse = None
     residual_vector = np.empty(n + 2)
+    jacobian_cache = {"inverse": None}
 
-    for k in range(1, count):
-        if (k & 255) == 0 and time.monotonic() - started > time_limit_s:
-            raise ReplayFailure("timeout", f"at t={times[k]:.3f} s after {time_limit_s:.0f} s wall clock")
-        half_step = 0.5 * (times[k] - times[k - 1])
-        vset, e = float(setpoint[k]), complex(source[k])
-        anchor = state + half_step * previous_rates
+    def solve_step(x_old, rates_old, terminal_old, step, vset, e, terminal_guess, when):
+        """One implicit trapezoid step with the network equation; returns the unknowns or None."""
+        half_step = 0.5 * step
+        anchor = x_old + half_step * rates_old
 
         def residual(unknowns):
             x, v, th = unknowns[:n], unknowns[n], unknowns[n + 1]
@@ -99,10 +93,13 @@ def replay_against_grid_equivalent(model, times, source, setpoint, reactance, in
             residual_vector[n], residual_vector[n + 1], _, _ = residual_parts(x, v, th, vset, e)
             return residual_vector.copy()
 
-        guess = np.concatenate([state + 2 * half_step * previous_rates, [voltage, angle]])
-        refreshed = False
-        while True:
-            if jacobian_inverse is None:
+        predicted = x_old + step * rates_old
+        starts = [np.concatenate([predicted, terminal_guess])]
+        if terminal_guess is not terminal_old:
+            starts.append(np.concatenate([predicted, terminal_old]))
+        for attempt, start in enumerate(starts + starts[-1:]):
+            guess = start.copy()
+            if attempt > 0 or jacobian_cache["inverse"] is None:
                 base = residual(guess)
                 jacobian = np.empty((n + 2, n + 2))
                 for column in range(n + 2):
@@ -111,30 +108,52 @@ def replay_against_grid_equivalent(model, times, source, setpoint, reactance, in
                     nudged[column] += increment
                     jacobian[:, column] = (residual(nudged) - base) / increment
                 if not np.all(np.isfinite(jacobian)):
-                    raise ReplayFailure("nan", f"non-finite Jacobian at t={times[k]:.4f} s")
+                    continue
                 try:
-                    jacobian_inverse = np.linalg.inv(jacobian)
+                    jacobian_cache["inverse"] = np.linalg.inv(jacobian)
                 except np.linalg.LinAlgError:
-                    raise ReplayFailure("singular", f"singular Jacobian at t={times[k]:.4f} s")
-            converged = False
+                    continue
             for iteration in range(max_newton_iterations):
                 value = residual(guess)
                 if not np.isfinite(value).all():
                     break
-                correction = jacobian_inverse @ value
+                correction = jacobian_cache["inverse"] @ value
                 guess -= correction
                 if np.abs(correction).max() <= newton_tolerance * (1.0 + np.abs(guess).max()):
-                    converged = True
-                    break
-            if converged:
-                if iteration >= 3:
-                    jacobian_inverse = None
-                break
-            if refreshed:
-                raise ReplayFailure("diverged", f"Newton failed at t={times[k]:.4f} s")
-            jacobian_inverse, refreshed = None, True
-            guess = np.concatenate([state + 2 * half_step * previous_rates, [voltage, angle]])
-        state, voltage, angle = guess[:n], float(guess[n]), float(guess[n + 1])
+                    if iteration >= 3:
+                        jacobian_cache["inverse"] = None
+                    return guess
+            jacobian_cache["inverse"] = None
+        return None
+
+    voltage, angle = float(initial_terminal[0]), float(initial_terminal[1])
+    out_p, out_q = np.empty(count), np.empty(count)
+    out_v, out_theta = np.empty(count), np.empty(count)
+    out_states = np.empty((count, n))
+    _, _, out_p[0], out_q[0] = residual_parts(state, voltage, angle, setpoint[0], source[0])
+    out_v[0], out_theta[0], out_states[0] = voltage, angle, state
+    previous_rates = rates(state, [voltage, angle, setpoint[0]])
+
+    for k in range(1, count):
+        if (k & 255) == 0 and time.monotonic() - started > time_limit_s:
+            raise ReplayFailure("timeout", f"at t={times[k]:.3f} s after {time_limit_s:.0f} s wall clock")
+        step = times[k] - times[k - 1]
+        vset, e = float(setpoint[k]), complex(source[k])
+        terminal_old = np.array([voltage, angle])
+        terminal_guess = (np.array([measured_terminal[0][k], measured_terminal[1][k]])
+                          if measured_terminal is not None else terminal_old)
+        solution = solve_step(state, previous_rates, terminal_old, step, vset, e, terminal_guess, times[k])
+        if solution is None:                    # a big jump in E within one sample: take it in smaller steps
+            x_sub, rates_sub, terminal_sub, e_old = state, previous_rates, terminal_old, complex(source[k - 1])
+            for part in range(1, substeps + 1):
+                fraction = part / substeps
+                e_sub = e_old + fraction * (e - e_old)
+                solution = solve_step(x_sub, rates_sub, terminal_sub, step / substeps, vset, e_sub, terminal_sub, times[k])
+                if solution is None:
+                    raise ReplayFailure("diverged", f"Newton failed at t={times[k]:.4f} s")
+                x_sub, terminal_sub = solution[:n], solution[n:]
+                rates_sub = rates(x_sub, [float(terminal_sub[0]), float(terminal_sub[1]), vset])
+        state, voltage, angle = solution[:n].copy(), float(solution[n]), float(solution[n + 1])
         previous_rates = rates(state, [voltage, angle, vset])
         _, _, p, q = residual_parts(state, voltage, angle, vset, e)
         if not (np.isfinite(previous_rates).all() and math.isfinite(p) and math.isfinite(q)):
@@ -157,7 +176,8 @@ def replay_recording(model, recording, reactance=DEFAULT_REACTANCE, every=1, tim
     source = thevenin_source(voltage, angle, active, reactive, reactance)
     operating_point = [voltage[0], angle[0], active[0], reactive[0]]
     p, q, v, th, states = replay_against_grid_equivalent(model.bind(operating_point), times, source, setpoint,
-                                                         reactance, (voltage[0], angle[0]), time_limit_s)
+                                                         reactance, (voltage[0], angle[0]), time_limit_s,
+                                                         measured_terminal=(voltage, angle))
     def rmse(a, b):
         return float(np.sqrt(np.mean((a - b) ** 2)))
     return {"times": times, "P": p, "Q": q, "V": v, "theta": th, "states": states,
@@ -168,6 +188,8 @@ def replay_recording(model, recording, reactance=DEFAULT_REACTANCE, every=1, tim
 
 
 def main(argv=None):
+    import warnings
+    warnings.filterwarnings("ignore", category=RuntimeWarning)     # overflow in a diverging trial model is reported, not printed
     parser = argparse.ArgumentParser(description="Replay a recording with the model against a grid equivalent.")
     parser.add_argument("submission")
     parser.add_argument("csv")

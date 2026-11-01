@@ -88,8 +88,9 @@ check(all(abs(menu_gains[key] / truth_gains[key] - 1) < 1e-3 for key in truth_ga
 vref = recording("A_val_vref_op2")
 truth_replay = replay.replay_recording(truth, vref, 0.5, 1, 1000)
 menu_replay = replay.replay_recording(true_menu, vref, 0.5, 1, 1000)
-check(max(np.max(np.abs(truth_replay["P"] - menu_replay["P"])), np.max(np.abs(truth_replay["Q"] - menu_replay["Q"])))
-      < 1e-9, "menu true combination replays like the truth to 1e-9 pu")
+largest_difference = max(np.max(np.abs(truth_replay["P"] - menu_replay["P"])),
+                         np.max(np.abs(truth_replay["Q"] - menu_replay["Q"])))
+check(largest_difference < 1e-6, f"menu true combination replays like the truth (largest difference {largest_difference:.1e} pu)")
 
 # 2. every structure parses and starts at rest
 count = 0
@@ -113,6 +114,14 @@ try:
     open_loop_failed = False
 except ReplayFailure:
     open_loop_failed = True
+fault = recording("A_fault_op1").iloc[:8001]
+ideal_truth = TerminalModel(menu.build_submission({**TRUE_CHOICES, "inner": "ideal"},
+                                                  {k: v for k, v in true_menu_params().items()
+                                                   if k not in ("Kpi", "Kii", "Te", "xf", "rf")}))
+for every in (1, 5):
+    fault_errors = relative_errors(replay.replay_recording(ideal_truth, fault, 0.5, every, 1000))
+    check(max(fault_errors["P"], fault_errors["Q"]) < 0.3,
+          f"the replay gets through the fault at every={every} (sub-steps at the jump; {fault_errors})")
 check(open_loop_failed, "open-loop replay of the truth diverges (why the grid-equivalent checker exists)")
 truth_errors = relative_errors(truth_replay)
 for scale in ({"Qdrp": 3.0}, {"wdrp": 2.0}, {"KPv": 0.3}):

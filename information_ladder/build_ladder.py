@@ -65,7 +65,8 @@ GRID_CHECK_STEP = (
     "model's P and Q move V and theta the way the grid does at short time scales. The open-loop replay in "
     "tools/check_submission.py holds V and theta at their measured values instead; a model whose control is only "
     "damped through the network can diverge there even when it is right, so trust the grid-equivalent numbers when "
-    "the two disagree. A model that reacts too strongly can still destabilize the full grid.")
+    "the two disagree. A fault moves the voltage too far within one sample for the equivalent to follow, so even the "
+    "right model reproduces a fault recording only roughly. A model that reacts too strongly can still destabilize the full grid.")
 V0_CHECK_STEP_START = "4. Check each candidate as close to how it will be scored as you can:"
 FINAL_STEP = (
     "7. Write the model to submission.json. Run python tools/check_submission.py submission.json val/<file>.csv on "
@@ -74,7 +75,7 @@ FINAL_STEP = (
 MENU_METHOD = """HOW TO WORK
 1. Read runs.json and dataset.json, then look at the data before fitting anything. Check what moves after each event and on what time scales, how the device's P and Q relate to V, theta and the voltage setpoint, and how large the noise is.
 2. Run python tools/structure_menu.py list. Decide from what the data show which structures are plausible: how P settles after a frequency event, whether Q follows the voltage setpoint with a droop, how fast the first response is.
-3. Fit each candidate with python tools/fit_structure.py --pf ... --qv ... --voltage ... [--inner ...] --files <train file>:<from>:<to> ... --out fit_<name>.json. Use short windows (a few seconds) that start at t = 0 or just before an event and include events that excite both paths: staged voltage-reference steps for the reactive side, load or generator events for the frequency side. One call stops after about 100 s and saves the best parameters so far; repeat it with --start fit_<name>.json until the cost stops falling.
+3. Fit each candidate with python tools/fit_structure.py --pf ... --qv ... --voltage ... [--inner ...] --files <train file>:<from>:<to> ... --out fit_<name>.json. Use short windows (a few seconds) that start at t = 0 or just before an event and include events that excite both paths: staged voltage-reference steps for the reactive side, load or generator events for the frequency side. Leave out the fault recording: the grid equivalent reproduces it only roughly, even with the right model. One call stops after about 100 s and saves the best parameters so far; repeat it with --start fit_<name>.json until the cost stops falling.
 4. Build the fitted structure with python tools/structure_menu.py build ... --params fit_<name>.json --out cand_<name>.json and check it on every validation file with python tools/grid_equivalent_replay.py cand_<name>.json val/<file>.csv. That replay runs the model against a source behind the network's short-circuit reactance, so its P and Q move V and theta the way the grid does at short time scales.
 5. Compare candidates on the validation errors, not the fit cost. Between two that do about equally well, keep the simpler one. Note any parameter that is poorly identified or trades off against another one.
 6. You may also edit a built submission by hand, or write your own model, if no menu structure fits.

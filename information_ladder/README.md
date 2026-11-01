@@ -23,7 +23,7 @@ r4 against r5 is the "menu with and without the true form" ablation. r4 against 
 ```bash
 PY=../.venv/bin/python
 $PY information_ladder/build_ladder.py               # harness folders (committed) and data/ (rebuilt, gitignored), about 15 s
-$PY information_ladder/tests/test_ladder.py          # 31 checks, about a minute; no API, Docker or ANDES
+$PY information_ladder/tests/test_ladder.py          # 33 checks, about a minute; no API, Docker or ANDES
 bash information_ladder/run_ladder.sh haiku low 10 2                         # every rung, 10 runs each
 bash information_ladder/run_ladder.sh sonnet low 10 2 r0_v0 r1_grid_equivalent   # the Sonnet-low baseline
 $PY information_ladder/summarize_ladder.py runs/ladder_<haiku> runs/ladder_<sonnet>   # both in one table
