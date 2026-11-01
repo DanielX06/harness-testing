@@ -285,6 +285,10 @@ try:
 except SandboxUnavailable as error:
     raised = str(error)
 check("Cannot connect to the Docker daemon" in raised, "a docker run that fails by itself raises instead of answering the agent")
+command = DockerPythonSandbox(os.path.join(work, "docker_down")).command_line("python", "-c", "print(1)")
+check(not hasattr(os, "getuid") or (f"{os.getuid()}:{os.getgid()}" in command and "HOME=/tmp" in command
+                                    and command.index("--user") < command.index("harness-v0-py")),
+      "the container runs as the host user, so the files it writes can be removed without sudo")
 
 # 12. which API errors are retried
 check(S.is_transient_api_error(S.TransientApiError()) and not S.is_transient_api_error(ValueError("bad request")),

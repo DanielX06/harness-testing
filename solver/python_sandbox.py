@@ -4,6 +4,11 @@ Each call starts a new container with no network, 2 GB of memory and no host fil
 one command, and stops it after CALL_TIME_LIMIT_S seconds (`timeout` runs inside the container, so the
 container stops too). Files the command writes stay in the folder for the next call.
 
+The container runs as the host user (--user uid:gid, with HOME=/tmp since that uid has no home in the image), so
+what it writes in the folder belongs to that user. Run as the image's root, it left root-owned files on Linux
+(WSL included) that neither solver_run.py nor experiment_archive.py could remove without sudo. Docker Desktop on a
+Mac maps ownership back to the user either way.
+
 When Docker itself fails (the daemon is not running, the image is missing), `docker run` exits with 125 and the
 call raises SandboxUnavailable instead of handing Docker's error to the agent as if its code had printed it.
 
@@ -24,6 +29,14 @@ CONTAINER_MEMORY = "2g"
 TIMEOUT_EXIT_CODE = 124                 # what `timeout` returns when it stops the command
 TIMED_OUT_MESSAGE = f"ERROR: timed out after {CALL_TIME_LIMIT_S} s"
 DOCKER_FAILED_EXIT_CODE = 125           # `docker run` itself failed (or `timeout` did), before the command ran
+
+
+def host_user_options():
+    """`docker run` options that make the container run as this user, or none where there is no uid (Windows
+    outside WSL)."""
+    if not hasattr(os, "getuid"):
+        return []
+    return ["--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp"]
 
 
 class SandboxUnavailable(RuntimeError):
@@ -57,7 +70,8 @@ class DockerPythonSandbox:
     def command_line(self, *command):
         """The full `docker run` command line for one command in the folder."""
         return [self.docker_executable, "run", "--rm", "--network", "none", "--memory", CONTAINER_MEMORY,
-                "-v", f"{self.folder}:/work", "-w", "/work", self.image, "timeout", str(self.time_limit_s), *command]
+                *host_user_options(), "-v", f"{self.folder}:/work", "-w", "/work", self.image,
+                "timeout", str(self.time_limit_s), *command]
 
     def run(self, *command, max_output_chars=None):
         result = _run_with_limit(self.command_line(*command), self.folder, self.time_limit_s, max_output_chars)
@@ -70,6 +84,9 @@ class DockerPythonSandbox:
 
     def remove(self):
         shutil.rmtree(self.folder, ignore_errors=True)
+        if os.path.exists(self.folder):         # say so rather than leave part of a sandbox behind silently
+            print(f"warning: could not remove all of {self.folder}; something in it belongs to another user",
+                  flush=True)
 
 
 class LocalPythonSandbox(DockerPythonSandbox):
