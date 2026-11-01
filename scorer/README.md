@@ -43,7 +43,7 @@ All components are normalized so that the flat prediction scores exactly 1.0 and
 
   $$\frac{1}{2|R|}\sum_r\sum_{y\in\{P,Q\}}\min\left(2,\ \frac{\mathrm{RMSE}(\hat y_r-y_r)}{\max(\mathrm{RMSE}(y_r(0)-y_r),\,3\sigma_y)}\right)$$
 
-  If ANDES fails (the grid loses stability, initialization fails, or there's a timeout, NaN, or |P| or |Q| above 50 pu), that run scores 2 on both channels. Bus V and theta errors are logged in `private.json` but not scored.
+  If ANDES fails (the grid loses stability, initialization fails, or there's a timeout, NaN, or |P| or |Q| above 50 pu), that run scores 2 on both channels. ANDES's generated code doesn't import the names sympy prints for tanh, Abs, Min and Max (and their derivatives), so the scorer adds them to the module that code star-imports (`GENERATED_CODE_EXTRAS` in `andes_closed_loop.py`); until Oct 31 every model using one failed here with a NameError. Bus V and theta errors are logged in `private.json` but not scored.
 * **Frequency response (FR, 0.3).** The submission is linearized exactly with symbolic Jacobians at the grid's operating point, with V and theta held. This gives the 2x2 response $G(j\omega)=C(j\omega I-A)^{-1}B+D$ at 40 log-spaced points from 0.1 to 10 Hz. Each of the four entries (P/V, P/theta, Q/V, Q/theta) gets a pointwise relative error, averaged over frequency and divided by the same average for $G = 0$. The score is the mean over the four entries. Open-loop instability is not penalized here, since the true model has it; closed-loop instability shows up in TD.
 * **Droops (PAR, 0.2).** These are taken from the same linearization: dP/dω is the limit of $G_{P\theta}(j\omega)/j\omega$, and dQ/dV is the limit of $G_{QV}(j\omega)$. Both are evaluated at 1e-4 Hz and checked against 1e-5 Hz. If they don't converge (no droop, or a pure integrator), that gain scores 2. The error per gain is $|g - g_{true}|/|g_{true}|$. For the truth this gives 22.1546 rad/s per pu and 0.039838 pu V per pu Q, matching the answer key.
 * **Grid score** = 0.5 TD + 0.3 FR + 0.2 PAR. **Role score** = 0.5 × mean + 0.5 × worst over that role's grids.
@@ -59,6 +59,7 @@ $PY scorer/score_submission.py path/to/submission.json --out scorer/runs/<name> 
 $PY scorer/score_submission.py path/to/submission.json --config scorer/config_rsi.json --out scorer/runs/<name>   # adds grid M
 $PY scorer/tests/test_submission_parser.py    # the parser's rules and the truth's droops; no ANDES needed
 $PY scorer/tests/test_scorer.py               # closed loop on config_min.json; --quick skips the sensitivity sweep
+$PY scorer/rescore_runs.py runs/<batch>/2*/ --reason "why"    # finished solver runs scored again after a scorer fix
 ```
 
 From Python, `SubmissionScorer(config_path, worker_count).score(path)` returns a report with `.public` and `.private`, and `write_score_files(report, folder)` writes them. A script that uses it must keep its top level under `if __name__ == "__main__":`: on macOS the ANDES worker processes are spawned, and spawned processes re-import the main script.
@@ -104,7 +105,8 @@ Before scoring I reproduced your `test_1` and `train_3` CSVs with my ANDES insta
 |---|---|
 | `score_submission.py` | the command line, `SubmissionScorer` and `write_score_files()` |
 | `submission_parser.py` | parses and checks submissions (`TerminalModel`), numeric functions for replay, exact linearization |
-| `andes_closed_loop.py` | ANDES model template, runtime registration, codegen, parallel runs with timeouts |
+| `andes_closed_loop.py` | ANDES model template, the names generated code needs, runtime registration, codegen, parallel runs with timeouts |
+| `rescore_runs.py` | scores saved solver runs again, keeping the old scores beside the new ones and in `meta.json` |
 | `score_components.py` | TD, FR and droop errors |
 | `scoring_grids.py` | loads a scorer config and its grids in the `kundur_family_v1` format (test_cases/grid_*) |
 | `grids/kundur_family_builder.py` | rebuilds any Kundur-family grid from its `holdout/case.json` (network, operating point, events) with any device in the slot |
@@ -114,7 +116,7 @@ Before scoring I reproduced your `test_1` and `train_3` CSVs with my ANDES insta
 | `truth/__init__.py` | which truth model goes with which device name |
 | `baselines/flat.json` | floor baseline |
 | `tests/test_scorer.py` | the closed-loop checks above (needs ANDES) |
-| `tests/test_submission_parser.py` | 20 checks of the parser's rules, odd but valid submissions, and the truth's droops against the answer keys (no ANDES) |
+| `tests/test_submission_parser.py` | 37 checks of the parser's rules, odd but valid submissions, the truth's droops against the answer keys, and every whitelisted function through an emulation of ANDES's code generation (no ANDES) |
 
 ## Open questions
 

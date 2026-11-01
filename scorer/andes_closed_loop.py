@@ -72,6 +72,30 @@ class {cls}({cls}Data, Model):
 '''
 
 
+# ---- names the generated code needs ------------------------------------------------------------------------
+# ANDES writes each model's numerical code (sympy's numpy printer) into a .py file in the pycode folder, under a fixed
+# header: numpy's sin, cos, tan, sqrt, exp, log, arctan, arctan2, abs, select and the comparisons, then
+# `from andes.thirdparty.npfunc import *`. The printer writes tanh as tanh, Min and Max as reduce(minimum, [...]) and
+# reduce(maximum, [...]), and in the Jacobian the derivative of Max or Min as heaviside and of Abs as sign. The
+# header imports none of these, so until Oct 31 every simulation of a model using tanh, Abs, Min or Max failed with a
+# NameError and its TD was 2 (5 of the 10 Opus-high runs of Oct 30), although the parser and the task prompt allow
+# all four. npfunc has no __all__, so adding the names to it, in every process before ANDES loads generated code,
+# puts them in each generated file's namespace: numpy's own functions, nothing rewritten. (A first fix that rewrote
+# the four into Piecewise failed twice in ANDES: importing andes replaces sp.Piecewise with a subclass that sympy
+# prints under a name ANDES's parser doesn't know, and sympy turns a Piecewise inside a nested Min or Max condition
+# into an ITE that ANDES's select can't run.) scorer/tests/test_submission_parser.py checks every whitelisted
+# function against the header plus these names.
+GENERATED_CODE_EXTRAS = {"tanh": np.tanh, "minimum": np.minimum, "maximum": np.maximum, "amin": np.amin,
+                         "amax": np.amax, "reduce": functools.reduce, "heaviside": np.heaviside, "sign": np.sign}
+
+
+def extend_generated_code_namespace():
+    """Add GENERATED_CODE_EXTRAS to andes.thirdparty.npfunc, which every generated pycode file star-imports."""
+    from andes.thirdparty import npfunc
+    for name, function in GENERATED_CODE_EXTRAS.items():
+        setattr(npfunc, name, function)
+
+
 # ---- the submission as an ANDES model class --------------------------------------------------------------
 def andes_class_name(submission_text):
     """A class name unique to the submission's content."""
@@ -140,6 +164,7 @@ def generate_numerical_code(pycode_path):
     """Generate numerical code for every registered model missing from pycode_path, in this process.
     (ANDES's own code generation uses a process pool that cannot see a model registered at runtime.)"""
     import andes
+    extend_generated_code_namespace()
     _forget_imported_pycode()
     system = andes.System(default_config=True, no_output=True, no_undill=True, pycode_path=pycode_path)
     system.prepare(quick=True, incremental=True, nomp=True)
@@ -203,6 +228,7 @@ def run_closed_loop_simulation(build_system, run_name, device_class, device_para
     Returns dict(t, P, Q, V, theta, seconds) on a uniform time grid, theta relative to its value at t = 0.
     On failure, saves what ANDES stored up to that point to partial_trajectory_path (.npz) if given."""
     started = time.monotonic()
+    extend_generated_code_namespace()
     _forget_imported_pycode()
     system = build_system(device_class, device_params, run_name, pycode_path)
     system.TDS.config.tf, system.TDS.config.tstep, system.TDS.config.no_tqdm = end_time, time_step, 1

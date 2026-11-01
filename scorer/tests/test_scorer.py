@@ -9,6 +9,8 @@
 4. the true model with wdrp or Qdrp scaled scores worse the further the scale is from 1 (skipped by --quick)
 5. invalid submissions, code injection and a timeout each score 2; a destabilizing model crashes ANDES on
    every disturbance it sees and never beats flat
+6. a submission using every whitelisted function simulates without a failure (until Oct 31 tanh, Abs, Min and
+   Max were NameErrors in ANDES's generated code: GENERATED_CODE_EXTRAS in scorer/andes_closed_loop.py)
 Each closed-loop score takes one to three minutes (every held-out run is a full ANDES simulation).
 scorer/tests/test_submission_parser.py has the fast checks that need no ANDES.
 """
@@ -33,6 +35,15 @@ BROKEN_SUBMISSIONS = {
     # unstable through the network on any grid: extra Q raises V, which grows x further
     "destabilizing": json.dumps({"params": {"a": 5.0}, "states": {"x": {"rhs": "a*x + 10*(V - V0)", "init": "0"}},
                                  "outputs": {"P": "P0", "Q": "Q0 + x"}}),
+}
+# every whitelisted function, in terms that are 0 at the operating point, so the model is flat plus a small
+# reaction to V moving away from a lagged copy of itself
+EVERY_FUNCTION = {
+    "states": {"x": {"rhs": "(V - x)/0.05", "init": "V0"}},
+    "outputs": {"P": "P0 + 0.01*(tanh(3*(V - x)) + Abs(V - x) + Max(V, x, V0) - Max(x, V0) + Min(V, x) - x"
+                     " + atan(V - x) + atan2(V - x, 1) + sqrt(V) - sqrt(x) + log(V) - log(x, 10)*log(10)"
+                     " + exp(V - x) - 1 + sin(theta - theta0) + tan(V - x) + cos(V - x) - 1)",
+                "Q": "Q0 + 0.01*(Min(V, Vset) - Min(x, Vset))"},
 }
 passed_all = True
 
@@ -120,6 +131,16 @@ def main():
             os.path.join(REPOSITORY_ROOT, "scorer", "baselines", "flat.json")).public)
         check("timeout", grid["td"] == 2.0 and {failure["failure"] for failure in grid["failures"]} == {"timeout"},
               f"td {grid['td']} failures {[failure['failure'] for failure in grid['failures']]}")
+
+        print("6. every whitelisted function, closed loop")
+        path = os.path.join(folder, "every_function.json")
+        json.dump(EVERY_FUNCTION, open(path, "w"))
+        grid = selection_grid(scorer.score(path).public)
+        # every held-out run simulates; the model has no droop by design, so PAR's "did not converge" is expected
+        simulated = all("failure" not in run for run in grid["td_runs"].values())
+        check("every function", simulated and grid["td"] < 2,
+              f"score {grid['score']} td {grid['td']} run failures "
+              f"{[run.get('failure') for run in grid['td_runs'].values() if 'failure' in run]}")
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     print("ALL PASS" if passed_all else "SOME CHECKS FAILED")
