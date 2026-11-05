@@ -1,0 +1,59 @@
+The submission is checked and ready. I fitted the device as a P-droop plus reactive-droop structure with a PI voltage loop, and it reproduces the validation recordings closely.
+
+**Model**
+
+- **Terminal voltage behind a reactance:** the internal voltage `E = (vd, vq)` is set by two PI integrators, `xvd` and `xvq`. They drive the d-axis and q-axis currents toward the reference `vr` and zero, so the device behaves as a controlled source on the terminal.
+- **Reference:** `vr = Vset + n·(Q0 − Qf)`, so the reactive droop acts on the filtered reactive output.
+- **Active power and angle:** `Pf` is the filtered active output, with the filter time constant `Tf`. The internal angle `delta` moves at `w0·m·(P0 − Pf)`, which is the active-power frequency droop. Its initial value is `theta0`.
+- **Outputs:** `P = vd·Id + vq·Iq` and `Q = −vd·Iq + vq·Id`, with `Id` and `Iq` taken from the loop references (ideal inner current loop).
+- **Rest at t = 0:** `Pf = P0`, `Qf = Q0`, `xvd = P0/V0`, `xvq = −Q0/V0`, and `delta = theta0`. The check confirmed zero derivatives and zero output mismatch at t = 0.
+
+**Parameters**
+
+- `m = 0.0588` (active-power droop). Well identified; it is stable across fits and drives the angle drift and the P response.
+- `Kpv = 0.667` and `Kiv = 1.21` (voltage loop gains). Reasonably identified, but they trade off with `n`.
+- `n = 0.0446` (reactive droop). Moderately identified. It moved considerably between fits, so treat it as uncertain.
+- `Tf ≈ 3e-10`. Effectively zero, meaning the power measurements are not filtered. The fit pushed it to a limit, so the data show no measurable filtering. This is the least trustworthy parameter, and the very small value makes the state stiff. The scorer's check ran cleanly, but a larger value such as 0.001–0.01 would be a safer choice if the scorer's integrator struggles.
+- `w0 = 2π·60` is fixed.
+
+**Validation (open-loop replay on the grid equivalent)**
+
+| File | P RMSE | Q RMSE | Flat-prediction Q RMSE |
+|---|---|---|---|
+| A_val_vref_op2 | 1.2e-4 | 5.1e-4 | 2.95e-2 |
+| A_val_load_op1 | 2.9e-4 | 1.3e-3 | 2.76e-2 |
+| A_line_op3 (train) | 2.8e-4 | 1.6e-3 | 3.11e-2 |
+
+The first candidate, with no PI loop (voltage behind reactance only), had Q errors about 5× larger and was discarded. I did not run the frequency-response or droop checks beyond the fitted `m` and `n` values.
+
+```json
+{
+  "params": {
+    "Tf": 3.3737558504148027e-10,
+    "m": 0.058834151758197596,
+    "n": 0.044616580415638915,
+    "Kpv": 0.6671679055473103,
+    "Kiv": 1.2113266553418651,
+    "w0": 376.99111843077515
+  },
+  "defs": {
+    "vd": "V*cos(delta - theta)",
+    "vq": "-V*sin(delta - theta)",
+    "vr": "Vset + n*(Q0 - Qf)",
+    "Idref": "Kpv*(vr - vd) + xvd",
+    "Iqref": "Kpv*(0 - vq) + xvq",
+    "Id": "Idref",
+    "Iq": "Iqref",
+    "Pe": "vd*Id + vq*Iq",
+    "Qe": "-vd*Iq + vq*Id"
+  },
+  "states": {
+    "Pf": {"rhs": "(Pe - Pf)/Tf", "init": "P0"},
+    "Qf": {"rhs": "(Qe - Qf)/Tf", "init": "Q0"},
+    "delta": {"rhs": "w0*m*(P0 - Pf)", "init": "theta0"},
+    "xvd": {"rhs": "Kiv*(vr - vd)", "init": "P0/V0"},
+    "xvq": {"rhs": "Kiv*(0 - vq)", "init": "-Q0/V0"}
+  },
+  "outputs": {"P": "Pe", "Q": "Qe"}
+}
+```

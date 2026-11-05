@@ -1,0 +1,48 @@
+The submitted model is a voltage-controlled inverter with frequency droop and reactive droop. It passes the parser and starts at rest. Validation replays are close: P RMSE about 1.5e-4 to 3e-4 pu and Q RMSE about 1.5e-2 pu on the open-loop check. Q is the weaker channel.
+
+**Structure**
+
+- **Active power:** P is taken as the electrical power `Pe = vd·Id + vq·Iq`, with a near-instant filter `Pf` (Tf ≈ 4e-7 s, effectively zero). The internal angle `delta` drifts at `w0·m·(P0 − Pf)`, so P responds to the bus frequency through a droop of m ≈ 0.059 pu. A generator trip recording supports this droop magnitude.
+- **Reactive power:** the voltage reference is `vr = Vset + n·(Q0 − Qf)`, with droop n ≈ 0.028 pu.
+- **Voltage control:** a PI loop on the d and q voltages in the internal frame (Kpv ≈ 0.68, Kiv ≈ 1.18) drives the currents directly, with an ideal inner current loop.
+- **Outputs:** `Qe = −vd·Iq + vq·Id`, and P and Q are the outputs.
+- **Initial state:** `xvd` and `xvq` start at the operating-point values, so the model is at rest at t = 0.
+
+**Identification**
+
+- **Well identified:** the frequency droop m, which is consistent across fits, and the voltage-loop gains Kpv and Kiv, which set the Q step response to the staged voltage-reference tests.
+- **Poorly identified:** the reactive droop n. It is small and trades off against the voltage-loop gains. The filter Tf went to its lower limit, so the measured P response has no visible lag at this resolution.
+- **Model check:** the reactive droop-only and voltage-behind-reactance structures fit much worse (0.38 of flat, with n driven to zero), so I used the PI voltage loop. I did not try the PI current-loop inner option.
+- **Not tested:** the frequency-response and droop checks against the real device, and the fault recording (left out of fitting as instructed).
+
+```json
+{
+  "params": {
+    "Tf": 4.2305958640676906e-07,
+    "m": 0.05919109498912377,
+    "n": 0.02764822106343168,
+    "Kpv": 0.6826648586505539,
+    "Kiv": 1.180942860261465,
+    "w0": 376.99111843077515
+  },
+  "defs": {
+    "vd": "V*cos(delta - theta)",
+    "vq": "-V*sin(delta - theta)",
+    "vr": "Vset + n*(Q0 - Qf)",
+    "Idref": "Kpv*(vr - vd) + xvd",
+    "Iqref": "Kpv*(0 - vq) + xvq",
+    "Id": "Idref",
+    "Iq": "Iqref",
+    "Pe": "vd*Id + vq*Iq",
+    "Qe": "-vd*Iq + vq*Id"
+  },
+  "states": {
+    "Pf": {"rhs": "(Pe - Pf)/Tf", "init": "P0"},
+    "Qf": {"rhs": "(Qe - Qf)/Tf", "init": "Q0"},
+    "delta": {"rhs": "w0*m*(P0 - Pf)", "init": "theta0"},
+    "xvd": {"rhs": "Kiv*(vr - vd)", "init": "P0/V0"},
+    "xvq": {"rhs": "Kiv*(0 - vq)", "init": "-Q0/V0"}
+  },
+  "outputs": {"P": "Pe", "Q": "Qe"}
+}
+```

@@ -1,0 +1,28 @@
+The model is a second-order linear transfer-function terminal model, written as a state-space submission. It passes the checker on both validation recordings: the initial state is at rest, and open-loop replay gives P errors of about 0.0003–0.0005 pu and Q errors of 0.003–0.008 pu.
+
+**Structure**
+
+Inputs are the terminal voltage deviation dV = V − V0, the setpoint deviation dVs = Vset − V0, and a frequency signal hp = s·θ/(1 + Tw·s) with Tw = 2 ms (a high-pass of the angle, standing in for dθ/dt). The device has three SISO paths sharing one denominator, s² + a1·s + a2:
+
+- P = P0 + Σ_j N_Pj(s)/D(s)·u_j
+- Q = Q0 + Σ_j N_Qj(s)/D(s)·u_j
+
+with u_j ∈ {dV, dVs, hp}. Each numerator is b2·s² + b1·s + b0. Each input has its own two-state companion chain, and the outputs are built from those states.
+
+**What the fit says**
+
+- Denominator: a1 ≈ 2.99 and a2 ≈ 1.08, giving poles near −1.5 ± 0.3j and the slower real pole −1.5 region. These are the dominant closed-loop dynamics of the fitted response.
+- Active power: P responds mainly to frequency. The DC droop from hp is about −0.046 pu P per rad/s of angle rate, roughly 17 pu per pu frequency (about a 6% droop). P also has small direct terms in dV and dVs.
+- Reactive power: DC gains are about −20 pu/pu on V and +21 pu/pu on Vset, a proportional Q-droop of roughly 5%. The Q-to-Vset step has a fast direct term and a lag, but the model overshoots the Q response to a Vset step (peak about 0.28 against about 0.25 measured on the validation recording). That is the main known weakness.
+
+**Identifiability**
+
+- Well identified: the P path (P residual is at the noise-free level, about 3e-4 pu), the P frequency droop, and the Q-to-V and Q-to-Vset DC gains.
+- Poorly identified: the exact Q dynamics and their overshoot. A third-order model fit training better but generalised worse (its validation Q error rose from 0.0082 to 0.0101), so I rejected it.
+- Tw = 2 ms was fixed, not fitted. It only needs to be small compared with the 0.1–10 Hz band.
+- Q residuals on the line-trip and generator-trip recordings (about 0.006–0.011 rms) are unexplained. They look like a slow, state-dependent offset that a linear model cannot reproduce.
+- I have not tested closed-loop stability in the grid, which is the scorer's main risk. The Q-to-V gain of about 20 pu/pu is substantial.
+
+```json
+{"params": {"a1": 2.9919196079359036, "a2": 1.075377171467412, "Tw": 0.002, "b2_P_V": 0.13665030221967667, "b1_P_V": -0.9594439822315229, "b0_P_V": 0.3310058757560334, "b2_Q_V": 0.389731435412565, "b1_Q_V": 3.222772167031509, "b0_Q_V": -21.953635652650824, "b2_P_Vs": 0.4998488522057508, "b1_P_Vs": 0.7000683120757275, "b0_P_Vs": -0.3076067987786168, "b2_Q_Vs": -0.004369304734540927, "b1_Q_Vs": 16.041831167933275, "b0_Q_Vs": 22.490734855703458, "b2_P_th": -0.001003541505173373, "b1_P_th": -0.14670645760907874, "b0_P_th": -0.04900915257397971, "b2_Q_th": 0.0038373318714774217, "b1_Q_th": 0.8897447865645932, "b0_Q_th": -0.013001244517823984}, "defs": {"hp": "(theta-theta0-xw)/Tw", "dV": "V-V0", "dVs": "Vset-V0"}, "states": {"xw": {"rhs": "(theta-theta0-xw)/Tw", "init": "0.0"}, "zVA": {"rhs": "zVB", "init": "0.0"}, "zVB": {"rhs": "-a2*zVA-a1*zVB+dV", "init": "0.0"}, "zVsA": {"rhs": "zVsB", "init": "0.0"}, "zVsB": {"rhs": "-a2*zVsA-a1*zVsB+dVs", "init": "0.0"}, "zthA": {"rhs": "zthB", "init": "0.0"}, "zthB": {"rhs": "-a2*zthA-a1*zthB+hp", "init": "0.0"}}, "outputs": {"P": "P0+(b2_P_V*dV+(b1_P_V-b2_P_V*a1)*zVB+(b0_P_V-b2_P_V*a2)*zVA)+(b2_P_Vs*dVs+(b1_P_Vs-b2_P_Vs*a1)*zVsB+(b0_P_Vs-b2_P_Vs*a2)*zVsA)+(b2_P_th*hp+(b1_P_th-b2_P_th*a1)*zthB+(b0_P_th-b2_P_th*a2)*zthA)", "Q": "Q0+(b2_Q_V*dV+(b1_Q_V-b2_Q_V*a1)*zVB+(b0_Q_V-b2_Q_V*a2)*zVA)+(b2_Q_Vs*dVs+(b1_Q_Vs-b2_Q_Vs*a1)*zVsB+(b0_Q_Vs-b2_Q_Vs*a2)*zVsA)+(b2_Q_th*hp+(b1_Q_th-b2_Q_th*a1)*zthB+(b0_Q_th-b2_Q_th*a2)*zthA)"}}
+```

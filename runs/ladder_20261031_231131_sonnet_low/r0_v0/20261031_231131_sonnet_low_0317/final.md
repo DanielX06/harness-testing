@@ -1,0 +1,31 @@
+**Model**
+
+- Frequency deviation: ω = (θ − xf)/Tw, with dxf/dt = ω and xf(0) = θ0. This is a filtered derivative of the bus angle.
+- Active power: P = P0 − kw·ω. It is a pure droop on the filtered angle rate, with no other dependence on V or Vset.
+- Reactive power: Q = Q0 + a·(V − V0) + x, with dx/dt = ki·(Vset − V) − lk·x and x(0) = 0.
+  - The `a` term is an instantaneous positive response of Q to V.
+  - The integral term x is a slow, leaky voltage control that pushes Q toward Vset.
+
+**Fit and checks**
+
+- I fitted on train/ by simulation and checked on val/.
+- Open-loop replay RMSE on val/ is P 6e-4 against a flat-model 6e-3 to 2e-2, and Q 8e-3 to 1e-2 against a flat-model 3e-2.
+- The check_submission run starts at rest on both validation files.
+- I did not test the model closed loop in a grid.
+
+**Identification**
+
+- **kw = 0.04515 pu per rad/s:** well identified, with ambient regressions on every run giving the same value.
+- **Tw ≈ 0.10 s:** moderately identified.
+- **a ≈ 1.65:** moderately identified. Per-run regressions ranged from about 0.8 to 2.2.
+- **ki ≈ 0.97:** moderately identified. It is set by the Vset steps.
+- **lk ≈ 0.027 per s:** poorly identified. It trades off against ki and `a`.
+- **Fault and line-trip recordings:** the Q residual stays at about 0.017 RMS there. The fast Q dynamics are not captured.
+- **Extra Q lag:** I tried a lag on the V term in Q, but it gave only a small gain, so I left it out.
+
+```json
+{"params":{"a":1.65202992,"ki":0.9745716,"lk":0.02727928,"kw":0.04515,"Tw":0.10323},
+"defs":{"w":"(theta-xf)/Tw"},
+"states":{"xf":{"rhs":"w","init":"theta0"},"x":{"rhs":"ki*(Vset-V)-lk*x","init":"0"}},
+"outputs":{"P":"P0-kw*w","Q":"Q0+a*(V-V0)+x"}}
+```

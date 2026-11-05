@@ -1,0 +1,45 @@
+The submitted model is a stable, simple terminal model that fits the training and validation recordings reasonably well. Its weak point is the Q response to a load step, which it does not capture.
+
+**Structure (states xw, y; P and Q in pu on 900 MVA):**
+
+- **Frequency estimate:** xw′ = (θ − xw)/Tw, with xw(0) = θ0, and ω̂ = (θ − xw)/Tw. This is a high-pass estimate of dθ/dt. The logged internal frequency deviation matched dθ/dt with correlation 0.98, so this stands in for the device's frequency command.
+- **Active power:** P = P0 − Kp·ω̂ + Kv·(V − V0). Kp ≈ 0.0453 pu per rad/s, a droop that lowers P when frequency rises. Kv ≈ −0.024 is a weak voltage term.
+- **Reactive power:** Q = Q0 + b·(V − V0) + y, with y′ = (a·(Vset − V0) − k·(V − V0) − y)/Tq and y(0) = 0. Fitted values are b ≈ 1.09, a ≈ 2.74, k ≈ 1.14 and Tq ≈ 1.32 s. The steady-state dQ/dV is b − k ≈ −0.05, a deliberately negative droop.
+
+**Identification:**
+- **Well identified:** Kp (about 0.045) and the P-to-V coupling are stable across fits. The P residual is about 0.001 pu or less on the training and validation files.
+- **Moderately identified:** the Q setpoint response (a, Tq) follows the staged voltage-reference steps well.
+- **Poorly identified:** the Q dependence on V. The fast and slow V terms (b, k) trade off against each other, and the steady dQ/dV is close to zero. A steady droop of about −0.05 keeps the grid-equivalent replay stable, but the device's true Q response to voltage is not captured.
+- **Poorly identified and unresolved:** the Q response to the load step at bus 8. On the validation load file the grid-equivalent Q RMSE is 0.0275, the same as a flat model. The grid-equivalent V error there is 0.015, against 0.005 for the flat baseline, so this model moves voltage worse than the recording in that event.
+
+**Rejected candidates:**
+- A model with a stronger fast V term and a steep, fast voltage-behind-reactance state fit the load file well (Q RMSE 0.011 open loop). It diverged in the grid-equivalent replay, so I rejected it.
+- An unconstrained fit gave a positive steady dQ/dV, which is a destabilising voltage feedback. I rejected it, and the constrained fit costs almost nothing in training error.
+
+The submission below passes `check_submission.py` (starts at rest, zero initial derivatives) and runs under `grid_equivalent_replay.py` on both validation files without diverging.
+
+```json
+{
+  "params": {
+    "Kp": 0.04530956742417146,
+    "Kv": -0.023757485948799,
+    "Tw": 0.1199363098877358,
+    "b": 1.086179569207681,
+    "a": 2.7381938572396316,
+    "k": 1.1361546596702794,
+    "Tq": 1.318705110966859
+  },
+  "defs": {
+    "w": "(theta-xw)/Tw",
+    "dV": "V-V0"
+  },
+  "states": {
+    "xw": {"rhs": "(theta-xw)/Tw", "init": "theta0"},
+    "y": {"rhs": "(a*(Vset-V0)-k*dV-y)/Tq", "init": "0.0"}
+  },
+  "outputs": {
+    "P": "P0-Kp*w+Kv*dV",
+    "Q": "Q0+b*dV+y"
+  }
+}
+```

@@ -1,0 +1,94 @@
+The model is a reduced-order grid-following inverter model. It passes the scorer's checks on both validation files: it starts at rest, and its open-loop errors are well below the flat-prediction baseline.
+
+**Structure (chosen from the menu, fitted on the train files):**
+- **Active power (frequency droop):** a filtered power measurement `Pf` (time constant `Tf`) and an internal angle `delta` that drifts as `d(delta)/dt = w0·m·(P0 − Pf)`. The device's P is the active part of the current `Pe = vd·Id + vq·Iq`, with `vd, vq` the terminal voltage in the frame of `delta`.
+- **Reactive power (reactive droop with a PI loop):** `Qs` lags `Qf` (time constant `Tql`). An integrator `xq` accumulates `Kiq·(Qs − Qf)`. The voltage reference is `vr = Vset + n·(Kpq·(Qs − Qf) + xq − Qf)`.
+- **Voltage control:** a PI loop in the internal frame, `Id_ref = Kpv·(vr − vd) + xvd` and `Iq_ref = −Kpv·vq + xvq`, with integrators `xvd` and `xvq` at rate `Kiv`. Currents follow their references immediately (ideal inner loop), so `Id = Id_ref` and `Iq = Iq_ref`.
+- **Outputs:** `P = Pe` and `Q = Qe = −vd·Iq + vq·Id`.
+
+**Equations in plain form:**
+- `Pf' = (Pe − Pf)/Tf`, `Qf' = (Qe − Qf)/Tql`-style filtering as in the submission (`Qf' = (Qe − Qf)/Tf`).
+- `delta' = w0·m·(P0 − Pf)`
+- `Qs' = (Qf − Qs)/Tql`, `xq' = Kiq·(Qs − Qf)`
+- `xvd' = Kiv·(vr − vd)`, `xvq' = −Kiv·vq`
+
+All states start at rest at the operating point (`Pf = P0`, `Qf = Q0`, `delta = theta0`, `xvd = P0/V0`, `xvq = −Q0/V0`).
+
+**Fitted parameters (train fit, final values):**
+- `m` ≈ 0.059 (frequency droop, well identified; it sets the P response to angle drift)
+- `n` ≈ 0.033 (reactive droop, moderately identified; it trades off against `Kpq` and `Kiq`)
+- `Kpv` ≈ 0.68, `Kiv` ≈ 1.21 (voltage loop, moderately identified; the two trade off)
+- `Tql` ≈ 0.034, `Kpq` ≈ 1.48, `Kiq` ≈ 6.3 (reactive loop, poorly identified individually; only their combined effect on Q is well constrained)
+- `Tf` ≈ 0.004 (filter, poorly identified; it is nearly invisible at the recording rate)
+
+**Structures rejected:**
+- Frequency droop with a PI power loop and voltage behind reactance: no better than the flat baseline (0.38).
+- Plain droop with voltage behind reactance: the reactive droop collapsed to zero and the fit was poor (0.38).
+- The PI voltage loop with reactive loop was the only one that fit well (train cost 0.004 after continued fitting, about 0.06 of the flat error).
+
+**Validation (grid-equivalent replay, X = 0.5 pu):**
+- `A_val_vref_op2`: P RMSE 1.3e-4 (flat 5.9e-3), Q RMSE 4.3e-4 (flat 3.0e-2)
+- `A_val_load_op1`: P RMSE 2.9e-4 (flat 2.4e-2), Q RMSE 1.1e-3 (flat 2.8e-2)
+
+The fit was not run to full convergence (it was still falling when the time budget ran out), and I did not check the frequency-response or droop linearization checks or the fault recording.
+
+```json
+{
+  "params": {
+    "Tf": 0.004196207698859409,
+    "m": 0.058892259255820055,
+    "n": 0.03283769116177466,
+    "Tql": 0.03367797443987353,
+    "Kpq": 1.4769557749381403,
+    "Kiq": 6.3014520976615485,
+    "Kpv": 0.6820096146550148,
+    "Kiv": 1.2126616550994804,
+    "w0": 376.99111843077515
+  },
+  "defs": {
+    "vd": "V*cos(delta - theta)",
+    "vq": "-V*sin(delta - theta)",
+    "vr": "Vset + n*(Kpq*(Qs - Qf) + xq - Qf)",
+    "Idref": "Kpv*(vr - vd) + xvd",
+    "Iqref": "Kpv*(0 - vq) + xvq",
+    "Id": "Idref",
+    "Iq": "Iqref",
+    "Pe": "vd*Id + vq*Iq",
+    "Qe": "-vd*Iq + vq*Id"
+  },
+  "states": {
+    "Pf": {
+      "rhs": "(Pe - Pf)/Tf",
+      "init": "P0"
+    },
+    "Qf": {
+      "rhs": "(Qe - Qf)/Tf",
+      "init": "Q0"
+    },
+    "delta": {
+      "rhs": "w0*m*(P0 - Pf)",
+      "init": "theta0"
+    },
+    "Qs": {
+      "rhs": "(Qf - Qs)/Tql",
+      "init": "Q0"
+    },
+    "xq": {
+      "rhs": "Kiq*(Qs - Qf)",
+      "init": "Q0"
+    },
+    "xvd": {
+      "rhs": "Kiv*(vr - vd)",
+      "init": "P0/V0"
+    },
+    "xvq": {
+      "rhs": "Kiv*(0 - vq)",
+      "init": "-Q0/V0"
+    }
+  },
+  "outputs": {
+    "P": "Pe",
+    "Q": "Qe"
+  }
+}
+```

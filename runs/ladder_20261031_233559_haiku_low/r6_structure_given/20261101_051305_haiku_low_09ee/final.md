@@ -1,0 +1,57 @@
+I did not get a submission that passes the scorer's open-loop check, so treat this as unfinished. `submission.json` holds the best fitted model, but it blows up in the open-loop replay on both validation files.
+
+**What the model is.** It is the documented menu structure, fitted to the training windows:
+- **Active power:** P is filtered (Tf) and goes through a PI power loop (Kip, Kpp, Tpl). The internal angle `delta` integrates `w0·m·(…)`, with droop m ≈ 0.0499.
+- **Reactive power:** Q is filtered (Tql) and goes through a PI reactive loop (Kiq, Kpq). The voltage reference is `vr = Vset + n·(…)`, with droop n = 0.05.
+- **Voltage loop:** a PI loop (Kpv = 1, Kiv ≈ 5) in the internal frame gives current references.
+- **Current loop:** a PI loop (Kpi = 1, Kii ≈ 50) drives a converter voltage through Te = 0.01 s and a filter reactance xf = 0.15 pu.
+
+**Fit quality.** Against the grid-equivalent replay on the validation files, the fitted model is much better than a flat prediction:
+- Voltage-reference test: P RMSE 1.3e-3 (flat 5.9e-3), Q RMSE 3.6e-3 (flat 2.95e-2).
+- Load-change test: P RMSE 5.2e-3 (flat 2.35e-2), Q RMSE 7.9e-3 (flat 2.76e-2).
+
+**What fails.** The scorer's open-loop check (`check_submission.py`) reports instability (|P| or |Q| > 50 pu) at about 0.5 s on the load file and about 0.8 s on the voltage file. Lowering the inner-loop gain (Kpi, Kii) or the voltage-loop gains (Kpv, Kiv) either still blew up or stayed stable only at a large error (P RMSE about 1.9 pu). I did not find a gain set that is both stable and accurate, and I did not re-fit the parameters under the open-loop criterion. My guess is that the internal angle drifts away from the measured angle when the measured voltage is fed in open loop, and the voltage and current loops then amplify the mismatch. That would also make the frequency-response and droop checks unreliable.
+
+**Parameter identification.**
+- Well identified: the P droop m (about 0.050) and the reactive droop n (fixed at 0.05, not really fitted).
+- Poorly identified: the loop time constants and gains (Tpl, Tql, Kip, Kiq, Kpi, Kii, Kiv). The fit barely moved from its starting values in the time I had, so the reported values are close to the defaults.
+- Not fitted at all: the Kpp, Kpq and Kpv gains and the Tf, Te and xf values were left at their defaults.
+
+**Next steps.** Fit under the open-loop check rather than only the grid replay, with the inner loop included or simplified. Alternatively, drop the internal-angle path and model P and Q as lagged responses to V, theta and Vset directly.
+
+```json
+{
+  "params": {"Tf": 0.010000000000000004, "m": 0.04985043752274523, "Tpl": 0.05000000000000001, "Kpp": 1.0, "Kip": 10.000000000000002, "n": 0.05000000000000001, "Tql": 0.05000000000000001, "Kpq": 1.0, "Kiq": 10.000000000000002, "Kpv": 1.0, "Kiv": 4.999999999999999, "Kpi": 1.0, "Kii": 49.99999999999999, "Te": 0.010000000000000004, "xf": 0.15, "rf": 0.0, "w0": 376.99111843077515},
+  "defs": {
+    "vd": "V*cos(delta - theta)",
+    "vq": "-V*sin(delta - theta)",
+    "vr": "Vset + n*(Kpq*(Qs - Qf) + xq - Qf)",
+    "Idref": "Kpv*(vr - vd) + xvd",
+    "Iqref": "Kpv*(0 - vq) + xvq",
+    "det": "rf**2 + xf**2",
+    "Id": "(rf*(ud - vd) + xf*(uq - vq))/det",
+    "Iq": "(-xf*(ud - vd) + rf*(uq - vq))/det",
+    "udref": "Kpi*(Idref - Id) + xid + vd + rf*Id - xf*Iq",
+    "uqref": "Kpi*(Iqref - Iq) + xiq + vq + rf*Iq + xf*Id",
+    "Pe": "vd*Id + vq*Iq",
+    "Qe": "-vd*Iq + vq*Id"
+  },
+  "states": {
+    "Pf": {"rhs": "(Pe - Pf)/Tf", "init": "P0"},
+    "Qf": {"rhs": "(Qe - Qf)/Tf", "init": "Q0"},
+    "Ps": {"rhs": "(Pf - Ps)/Tpl", "init": "P0"},
+    "xp": {"rhs": "Kip*(Ps - Pf)", "init": "P0"},
+    "delta": {"rhs": "w0*m*(Kpp*(Ps - Pf) + xp - Pf)", "init": "theta0"},
+    "Qs": {"rhs": "(Qf - Qs)/Tql", "init": "Q0"},
+    "xq": {"rhs": "Kiq*(Qs - Qf)", "init": "Q0"},
+    "xvd": {"rhs": "Kiv*(vr - vd)", "init": "P0/V0"},
+    "xvq": {"rhs": "Kiv*(0 - vq)", "init": "-Q0/V0"},
+    "xid": {"rhs": "Kii*(Idref - Id)", "init": "0"},
+    "xiq": {"rhs": "Kii*(Iqref - Iq)", "init": "0"},
+    "ud": {"rhs": "(udref - ud)/Te", "init": "V0 + rf*P0/V0 + xf*Q0/V0"},
+    "uq": {"rhs": "(uqref - uq)/Te", "init": "-rf*Q0/V0 + xf*P0/V0"}
+  },
+  "outputs": {"P": "Pe", "Q": "Qe"},
+  "notes": "structure_menu blocks: pf=droop_with_power_loop, qv=droop_with_reactive_loop, voltage=pi_voltage_loop, inner=pi_current_loop"
+}
+```

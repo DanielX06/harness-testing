@@ -1,0 +1,66 @@
+The submission passes the checker on both validation recordings. Open-loop errors are about 6e-4 pu for P and 4–8e-3 pu for Q, against flat-line errors of 0.03 for Q and about 6e-3 to 2e-2 for P. I stopped here rather than refit on validation data.
+
+## Model
+
+The device is a linear second-order filter in voltage and setpoint, plus a frequency term. Let dV = V − V0, dS = Vset − V0, and let w = (θ − z)/Tw be the frequency estimate, where z is a washout state with Tw = 0.1 s.
+
+- **Reactive power:** Q = Q0 + G_V(s)·dV + G_S(s)·dS + k_qw·w, with G_V(s) = (2.052 − 1.129s + 1.027s²)/(1 + 1.122s + 1.187s²) and G_S(s) = (0.221 + 1.063s + 1.360s²)/(1 + 1.122s + 1.187s²).
+- **Active power:** P = P0 + k_pw·w + a_pv·dV, with k_pw = −0.0451 and a_pv = −0.0014.
+- **Coefficients:** k_qw = −0.0473.
+
+The second-order filters are written as four states (pV, dpV, pS, dpS) and the washout as one state (zth). All states start at rest.
+
+## What the data showed
+
+- **Setpoint steps:** P and Q move within one sample of a setpoint step. Q then settles with a damped response of about 1 s.
+- **Sign of dQ/dV:** the load-step recording shows Q falling when V falls, at about +1.7 pu Q per pu V. This is the opposite of the droop I first expected. The fitted DC gain is +2.05.
+- **Frequency:** P falls by about 0.045 pu per rad/s of angle rate. Q shows a similar coupling of −0.047, which is why the fitted Q term resembles ΔP.
+
+## Parameter identification
+
+- **Well identified:** the P frequency droop (k_pw), the Q–V steady-state gain, and the Q–Vset response. These are consistent across operating points and events.
+- **Moderately identified:** the damping and frequency of the second-order Q filter. These trade off against the numerator s² coefficients.
+- **Poorly identified:** a_pv, which is negligible and could be dropped. Tw was fixed at 0.1 s, so the frequency-estimate dynamics are not separately fitted.
+- **Not captured:** the fault recording. Its Q error is about the size of its own signal, so large nonlinear voltage excursions are not modelled.
+
+## Risks
+
+- The positive steady-state dQ/dV means the device withdraws reactive support when voltage falls. This is what the data shows, but in closed loop it reduces damping, so the grid could be sensitive to it. I could not test closed-loop stability with the tools available.
+- I did not check the 0.1–10 Hz linearization or the droops against the real device.
+
+```json
+{
+  "params": {
+    "a1": 1.1224,
+    "a2": 1.1867,
+    "bV0": 2.0516,
+    "bV1": -1.1290,
+    "bV2": 1.0273,
+    "bS0": 0.2211,
+    "bS1": 1.0626,
+    "bS2": 1.3602,
+    "kqw": -0.0473,
+    "kpw": -0.0451,
+    "apv": -0.0014,
+    "Tw": 0.1
+  },
+  "defs": {
+    "dV": "V-V0",
+    "dS": "Vset-V0",
+    "w": "(theta-zth)/Tw",
+    "ddV": "(dV-a1*dpV-pV)/a2",
+    "ddS": "(dS-a1*dpS-pS)/a2"
+  },
+  "states": {
+    "pV": {"rhs": "dpV", "init": "0"},
+    "dpV": {"rhs": "ddV", "init": "0"},
+    "pS": {"rhs": "dpS", "init": "0"},
+    "dpS": {"rhs": "ddS", "init": "0"},
+    "zth": {"rhs": "(theta-zth)/Tw", "init": "theta0"}
+  },
+  "outputs": {
+    "P": "P0+kpw*w+apv*dV",
+    "Q": "Q0+bV0*pV+bV1*dpV+bV2*ddV+bS0*pS+bS1*dpS+bS2*ddS+kqw*w"
+  }
+}
+```

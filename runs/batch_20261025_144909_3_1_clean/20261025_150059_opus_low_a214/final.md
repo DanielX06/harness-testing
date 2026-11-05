@@ -1,0 +1,36 @@
+I've built and checked a droop-controlled model of the device, written as an internal voltage behind a reactance. Active power fits the validation data well. Reactive power fits only partly, so treat the Q side as the weaker half of the model.
+
+**Validation (open-loop replay of val/ files, error in pu):**
+
+| File | P error | P error if flat | Q error | Q error if flat |
+|---|---|---|---|---|
+| val_vref_op2 | 2.9e-4 | 5.9e-3 | 1.6e-2 | 3.0e-2 |
+| val_load_op1 | 8.0e-4 | 2.4e-2 | 3.2e-3 | 2.8e-2 |
+
+On the voltage-reference test, Q error is still about half of what a model that never moves would score. I stopped fitting there, so the Q residuals are well above the noise, which is zero in this data. I have only replayed the model open loop; I have not tested it inside the grid simulation.
+
+**Equations** (δ is the internal angle, E the internal voltage, ωb = 2π·60):
+- P = E·V·sin(δ−θ)/X
+- Q = (E·V·cos(δ−θ) − V²)/X
+- dδ/dt = ωb·mp·(P0 − Pf), with dPf/dt = (P − Pf)/Tp. This is the frequency droop: 1/mp ≈ 16.7 pu power per pu frequency.
+- dQf/dt = (Q − Qf)/Tq and dVm/dt = (V − Vm)/Tv
+- err = Vset − mq·(Qf − Q0) − Vm. This is the voltage droop: mq ≈ 0.044.
+- dEi/dt = ki·err and dE/dt = (Ei + kp·err − E)/Te
+- At t = 0, δ and E come from P0, Q0 and V0, so the model starts at rest. The submission checker confirmed this on both validation files.
+
+**How well the parameters are identified:**
+- **Well identified:** mp ≈ 0.060, the frequency droop. It is consistent across the generator trip, load and fault events.
+- **Moderately identified:** mq ≈ 0.044, and the combined voltage-control gains kp/X ≈ 0.59 and ki/X ≈ 1.2.
+- **Poorly identified:**
+  - X stopped at the upper bound I set (20). The device behaves almost like a current source, so X trades off directly against kp and ki.
+  - Tp stopped at its lower bound (5 ms), so its true value isn't resolved.
+  - Tq ≈ 5 s is only weakly constrained by the data.
+  - Tv = 0.01 s was fixed by assumption, not fitted.
+
+**Models I rejected:**
+- The same structure with a plain integral voltage loop (no proportional term or lag): Q error was about twice as large.
+- Grid-following models with a frequency-measuring filter and a lagged or PI-controlled Q: P was about as good, but Q was worse. One of these fits got stuck in a poor local minimum.
+
+```json
+{"params": {"X": 19.999999999999996, "mp": 0.05972750499417265, "Tp": 0.005000000000000001, "mq": 0.04360971258862989, "Tq": 4.958542937060584, "ki": 23.66478309500548, "kp": 11.734192009944328, "Te": 0.04649304491437956, "Tv": 0.01, "wb": 376.99111843077515}, "defs": {"ang": "dl-theta", "Pe": "Eq*V*sin(ang)/X", "Qe": "(Eq*V*cos(ang)-V**2)/X", "err": "Vset-mq*(Qf-Q0)-Vm"}, "states": {"dl": {"rhs": "wb*mp*(P0-Pf)", "init": "theta0+atan2(P0*X/V0,(Q0*X+V0**2)/V0)"}, "Pf": {"rhs": "(Pe-Pf)/Tp", "init": "P0"}, "Qf": {"rhs": "(Qe-Qf)/Tq", "init": "Q0"}, "Ei": {"rhs": "ki*err", "init": "sqrt((P0*X/V0)**2+((Q0*X+V0**2)/V0)**2)"}, "Eq": {"rhs": "(Ei+kp*err-Eq)/Te", "init": "sqrt((P0*X/V0)**2+((Q0*X+V0**2)/V0)**2)"}, "Vm": {"rhs": "(V-Vm)/Tv", "init": "V0"}}, "outputs": {"P": "Pe", "Q": "Qe"}}
+```

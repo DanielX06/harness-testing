@@ -1,0 +1,65 @@
+The model is in place, but its reactive-power fit is weak on the load validation file. I'm submitting this version and flagging that weakness.
+
+**Model (structure: droop P, no reactive droop, voltage behind reactance)**
+
+- Internal voltage: E0 = |V0 + j·Xv·(Q0 − jP0)/V0|, with E0 set so the model starts at rest.
+- Terminal-side quantities: vd = V·cos(δ − θ), vq = −V·sin(δ − θ).
+- Currents behind the reactance: Id = −vq/Xv, Iq = −(E0 + Vset − V0 − vd)/Xv.
+- Outputs: P = vd·Id + vq·Iq, Q = −vd·Iq + vq·Id.
+- Active-power droop: dδ/dt = ω0·m·(P0 − Pf), where Pf is P passed through a first-order filter with time constant Tf.
+- Filter states: Pf and Qf, both with Tf = 0.01 s.
+
+**Parameters**
+
+- m ≈ 0.058 is reasonably identified. It sets the P response to frequency and was stable across the fits.
+- Xv ≈ 0.148 pu sets the Q step to a voltage-setpoint change. It is also fairly well determined, and the setpoint steps show a clear Q jump.
+- Tf was not identified. The fit drove it to about 1e-17, which is a bound artefact. I reset it to the documented 0.01 s, which makes the initial state exactly at rest and avoids stiffness.
+- The reactive droop n went to zero in the fit, and the structure without it fit as well as the one with it. So I left it out.
+
+**Validation**
+
+- Grid-equivalent replay on the validation files is good for P (RMSE about 5e-4 to 1e-3 against a flat-prediction RMSE of 6e-3 to 2e-2) and V and θ.
+- Q on the grid replay is also well ahead of flat (about 6e-3 to 9e-3 against about 3e-2).
+- Open-loop Q on the validation load file is no better than flat (0.042 against 0.028). This is the main weakness. The structure does not capture something in how Q evolves between setpoint steps, possibly a slower voltage-loop or reactive-power dynamic that I did not have budget to identify.
+- The submission parses and starts at rest (init residual about 1e-13).
+
+I did not get to test richer menu structures (the PI voltage loop with an inner loop, or a power/reactive loop), so this choice is among the simplest candidates only.
+
+```json
+{
+  "params": {
+    "Tf": 0.01,
+    "m": 0.058242171710690314,
+    "Xv": 0.14830718365333495,
+    "w0": 376.99111843077515
+  },
+  "defs": {
+    "E0": "sqrt((V0 + Xv*Q0/V0)**2 + (Xv*P0/V0)**2)",
+    "vd": "V*cos(delta - theta)",
+    "vq": "-V*sin(delta - theta)",
+    "vr": "Vset",
+    "Id": "-vq/Xv",
+    "Iq": "-(E0 + vr - V0 - vd)/Xv",
+    "Pe": "vd*Id + vq*Iq",
+    "Qe": "-vd*Iq + vq*Id"
+  },
+  "states": {
+    "Pf": {
+      "rhs": "(Pe - Pf)/Tf",
+      "init": "P0"
+    },
+    "Qf": {
+      "rhs": "(Qe - Qf)/Tf",
+      "init": "Q0"
+    },
+    "delta": {
+      "rhs": "w0*m*(P0 - Pf)",
+      "init": "theta0 + atan2((Xv*P0/V0), (V0 + Xv*Q0/V0))"
+    }
+  },
+  "outputs": {
+    "P": "Pe",
+    "Q": "Qe"
+  }
+}
+```

@@ -1,0 +1,31 @@
+**Model.** Let dv = V − V0 and w = (theta − f)/Tw. Here f is a lagged copy of the bus angle that starts at theta0, so w is a filtered frequency deviation.
+
+- f' = w
+- xp' = (−Kp·w + g·dv − xp)/Tp
+- P = P0 + xp + e·dv
+- xq' = (a·(Vset − V0) + b·dv − xq)/Tq
+- y' = (h·w + k·dv − y)/Tq2
+- Q = Q0 + xq + c·dv + y
+
+**What the checks show.** The model starts at rest in both validation files. Open-loop replay RMSE against measured:
+
+| Validation file | P | Q | Flat-model P | Flat-model Q |
+|---|---|---|---|---|
+| `A_val_vref_op2` | 7.95e-4 | 4.59e-3 | 5.85e-3 | 2.95e-2 |
+| `A_val_load_op1` | 6.12e-4 | 6.55e-3 | 2.35e-2 | 2.76e-2 |
+
+I did not test it closed loop in a grid.
+
+**Well identified:**
+- P droop path: Kp = 0.045 pu per (rad/s). This is a frequency droop through a lagged angle derivative (Tw ≈ 0.12 s, Tp ≈ 0.04 s). P replay error is far below the signal size.
+- Direct P response to V: e ≈ 0.73 and g ≈ −0.8. These are moderately well identified.
+- Direct Q response to V: c ≈ 0.76.
+
+**Poorly identified:**
+- The slow Q path is the weak part. b and k sit at or near their bounds (b = 45.5, k = −50). Tq ≈ 4.7 s and Tq2 = 5 s (at its bound) are almost the same, so the two slow filters trade off. Only their combination is determined: a steady-state Q droop of about 1 pu of Q per pu of (Vset − V), with a lag of about 5 s.
+- h is tiny and probably not real.
+- A simpler model, with one slow Q filter plus a fast direct term, fitted worse. Its validation RMSE was 0.007 for both files, against 0.004 to 0.005 for this one. I chose the four-state model for its accuracy.
+
+```json
+{"params": {"Kp": 0.04510299034108623, "Tw": 0.12451654824614149, "Tp": 0.036940401868842766, "a": 5.131093752729768, "b": 45.51863124687463, "Tq": 4.744228041009206, "c": 0.7598739107807102, "e": 0.7307548673686404, "g": -0.797766554777629, "h": -0.03979521223843869, "Tq2": 4.999999999999999, "k": -49.99999975206247}, "defs": {"w": "(theta-f)/Tw", "dv": "V-V0"}, "states": {"f": {"rhs": "w", "init": "theta0"}, "xp": {"rhs": "(-Kp*w+g*dv-xp)/Tp", "init": "0"}, "xq": {"rhs": "(a*(Vset-V0)+b*dv-xq)/Tq", "init": "0"}, "y": {"rhs": "(h*w+k*dv-y)/Tq2", "init": "0"}}, "outputs": {"P": "P0+xp+e*dv", "Q": "Q0+xq+c*dv+y"}}
+```

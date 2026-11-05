@@ -1,0 +1,39 @@
+The active-power (P) part of the model fits well. The reactive-power (Q) part is only partly right: it captures the setpoint response and the steady droop, but misses the fast Q swings. The submission passes `check_submission` on both validation files: it starts at rest, and P and Q match P0 and Q0 at t = 0.
+
+**Open-loop replay on validation, RMSE (a model whose output never moves in brackets)**
+
+| File | P | Q |
+|---|---|---|
+| `val_vref_op2` | 6.3e-4 (5.9e-3) | 6.9e-3 (2.95e-2) |
+| `val_load_op1` | 6.3e-4 (2.35e-2) | 5.0e-3 (2.76e-2) |
+
+**Model equations** (ω₀ = 376.99 rad/s)
+
+*Active power: frequency droop*
+- Frequency estimate: dθf/dt = (θ − θf)/Tw, and ω = (θ − θf)/(Tw·ω₀), in pu.
+- Power: dPm/dt = (P0 − Kp·ω − Pm)/Tp, and P = Pm.
+- Kp ≈ 17 means 5.9% droop, so dP/dω ≈ −17 pu.
+
+*Reactive power: voltage control through a reactive current Iq, with Q droop*
+- Filtered voltage: dVf/dt = (V − Vf)/Tv.
+- Error: e = Vset − Vf − nq·(Iq − Q0/V0).
+- Integral: dxi/dt = Ki·e.
+- Current: dIq/dt = (Q0/V0 + Kq·e + xi − Iq)/Tq, and Q = V·Iq.
+- At steady state the integral drives e to zero, so dV = nq·dIq. With nq ≈ 0.04, dQ/dV is about +25 pu, meaning Q rises about 25 pu per pu fall in voltage.
+
+**How well each parameter is identified**
+- **Kp ≈ 17.0 and Tp ≈ 0.10 s: well identified.** The generator trip, which settled at about −0.0053 pu frequency and +0.09 pu power, pins Kp down.
+- **Tw is not identified.** It sits on its lower bound of 6 ms; it only means the frequency estimate is fast.
+- **nq ≈ 0.039: fairly well identified.** It comes from the voltage-step tests: with the setpoint at 1.02, V settles near 1.018 while Q rises by about 0.056.
+- **Ki ≈ 1.33: moderately identified.**
+- **Tv = 2 s, Kq ≈ 3.3 and Tq ≈ 3.4 s: poorly identified and trade off against each other.** Tv sits on its 2 s upper bound. Refitting with Tv held at 0.1 s or less made the fit much worse (Q error on the voltage-step recording rose from 0.012 to 0.033), so I kept this version.
+
+**Remaining problems and rejected candidates**
+- Q misses the fast swings. Q moves in phase with V during the ~1.5 s oscillations after events, and P and Q jump instantly when the terminal angle jumps. That hints at grid-forming (voltage-source) behaviour.
+- I tried two grid-forming models: a voltage source behind a reactance with P–f and Q–V droop. Neither matched the data better, so I rejected them. A plain droop model with filtered Q was also worse than the current-based one.
+- Residuals are largest in the fault recording, possibly because of current limiting during the fault, which isn't modelled.
+- I have only replayed the model open loop. It has not been tested closed loop inside the grid.
+
+```json
+{"params": {"Kp": 17.0209683, "Tw": 0.006, "Tp": 0.102849669, "Tv": 1.9999999999999996, "Kq": 3.266848991164563, "Ki": 1.3345686308681564, "nq": 0.0394712723919858, "Tq": 3.3995116622285404}, "defs": {"w": "(theta-thf)/(Tw*376.99111843077515)", "Iq0": "Q0/V0", "e": "Vset-Vf-nq*(Iq-Iq0)"}, "states": {"thf": {"rhs": "(theta-thf)/Tw", "init": "theta0"}, "Pm": {"rhs": "(P0-Kp*w-Pm)/Tp", "init": "P0"}, "Vf": {"rhs": "(V-Vf)/Tv", "init": "V0"}, "xi": {"rhs": "Ki*e", "init": "0"}, "Iq": {"rhs": "(Iq0+Kq*e+xi-Iq)/Tq", "init": "Q0/V0"}}, "outputs": {"P": "Pm", "Q": "V*Iq"}}
+```

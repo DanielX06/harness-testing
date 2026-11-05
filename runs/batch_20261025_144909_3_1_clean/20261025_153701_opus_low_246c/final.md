@@ -1,0 +1,35 @@
+I have a model that passes the format check on both validation files, but only the active-power half is well identified. The reactive-power half is a data-driven fit whose structure I couldn't pin down.
+
+**Validation results** (open-loop replay; "flat" means P and Q never move):
+
+| File | P error (RMSE) | P flat | Q error (RMSE) | Q flat |
+|---|---|---|---|---|
+| `A_val_vref_op2` | 0.0006 | 0.0059 | 0.0042 | 0.0295 |
+| `A_val_load_op1` | 0.0007 | 0.0235 | 0.0074 | 0.0276 |
+
+Both files start at rest: all derivatives are zero and P, Q equal P0, Q0 at t = 0.
+
+**Equations** (ω_b = 2π·60)
+- **Frequency estimate:** dθf/dt = (θ − θf)/Tw, with θf(0) = θ0. The per-unit frequency deviation is ω̂ = (θ − θf)/(Tw·ω_b).
+- **Active power:** dP/dt = (P0 − Kp·ω̂ − P)/Tp, with P(0) = P0. This is a frequency droop through a lag.
+- **Internal angle tracker:** e = θ − δ, ω_p = kpll·e + ξ, dδ/dt = ω_p with δ(0) = θ0, and dξ/dt = kipll·e with ξ(0) = 0.
+- **Reactive power:** Q_c = Q0 + a·(Vset − V0) + b·(V − V0) + c·e + ec·ω_p, and dQ/dt = (Q_c − Q)/Tq, with Q(0) = Q0. In the JSON the coefficient ec is the parameter `e`.
+
+**How well each parameter is identified**
+- **Kp ≈ 17.0 (about 5.9 % droop): well identified.** Every train recording agrees on P = P0 − 17·Δω. The P filter is fast and its two time constants trade off; Tw sits at its lower bound, so read it as "fast" rather than as a measured value. P error is about 0.0002 to 0.003 on the train files.
+- **The Q part is poorly identified.** Train Q errors are about 0.003 on ambient and voltage-reference tests and only 0.015 to 0.023 on the fault, line-trip and generator-trip events. So the event-time Q dynamics are not captured.
+  - I tried and rejected several structures because their Q error stayed close to the flat level: a voltage source behind a reactance, a virtual synchronous machine, a grid-following controller with a phase-locked loop, PI voltage control with Q droop, voltage regulated at the high side of the transformer, and a generic 4-state linear model.
+  - Regression on the data shows Q depends on the bus angle, which is why the model has an internal angle tracker. The tracker gains kpll and kipll trade off against c and ec.
+  - The fitted long-run dQ/dV is b ≈ +0.48. The documentation says the device has Q-voltage droop, which would make it negative. The steady-state levels in the train data also point to a positive value, so this may not match the real device on the droop check.
+  - During the bus-8 fault, Q jumped by about 0.2 at once. This looks like a nonlinear fault ride-through boost that the model does not include.
+
+**Closed-loop risk:** Every check here is open-loop replay. The positive dQ/dV, together with Q reacting to angle, has not been tested inside the grid and could weaken voltage stability there.
+
+```json
+{
+ "params": {"Kp": 17.0213935, "Tw": 0.011, "Tp": 0.109177214, "a": 1.60769522, "b": 0.483249109, "c": 2.66866446, "e": -0.0484082423, "kpll": 48.1911763, "kipll": 14.6360905, "Tq": 0.0196617459, "wb": 376.99111843077515},
+ "defs": {"wf": "(theta-thf)/Tw/wb", "er": "theta-dl", "wp": "kpll*er+xi", "qc": "Q0+a*(Vset-V0)+b*(V-V0)+c*er+e*wp"},
+ "states": {"thf": {"rhs": "(theta-thf)/Tw", "init": "theta0"}, "px": {"rhs": "(P0-Kp*wf-px)/Tp", "init": "P0"}, "dl": {"rhs": "wp", "init": "theta0"}, "xi": {"rhs": "kipll*er", "init": "0"}, "qo": {"rhs": "(qc-qo)/Tq", "init": "Q0"}},
+ "outputs": {"P": "px", "Q": "qo"}
+}
+```

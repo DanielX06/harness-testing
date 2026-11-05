@@ -1,0 +1,22 @@
+I'm submitting the fitted structure-menu model, but it is not clean: it passes the grid-equivalent replay on both validation files, yet it fails the open-loop replay on every recording I tried. I ran out of effort budget before resolving that, so treat the submission as provisional.
+
+**Structure (documented menu, fitted parameters):**
+- **Power path:** P is filtered by a first-order lag Tf to `Pf`. A power loop lags it with Tpl to `Ps` and integrates Kip·(Ps−Pf) into `xp`. The internal angle `delta` runs as `w0·m·(Kpp·(Ps−Pf) + xp − Pf)`, starting at theta0. The frequency droop is therefore m ≈ 0.046.
+- **Reactive path:** Q is filtered by Tf to `Qf`, lagged by Tql to `Qs`, and integrated into `xq`. The voltage reference is `vr = Vset + n·(Kpq·(Qs−Qf) + xq − Qf)`, with n ≈ 0.030 (reactive droop).
+- **Voltage loop:** a PI in the internal frame (Kpv ≈ 0.68, Kiv ≈ 1.12) produces current references.
+- **Current loop:** a PI (Kpi ≈ 1.30, Kii ≈ 35.6) drives converter voltages `ud`, `uq` through a lag Te ≈ 0.012 s and a filter reactance xf ≈ 0.163 pu.
+- **Outputs:** `P = vd·Id + vq·Iq` and `Q = −vd·Iq + vq·Id`.
+- The model starts at rest at the operating point (checked by the parser).
+
+**Fit quality:** I fitted to short windows from A_vref_op1, A_gentrip_op1 and A_load_op2, using the grid-equivalent replay. The cost fell from 0.33 to about 0.027 over several restarts and was still falling when I stopped. On the validation files (A_val_vref_op2, A_val_load_op1) the grid-equivalent replay RMSE is about 2e-4 to 9e-4 for P and Q, against 6e-3 to 3e-2 for a flat model.
+
+**Identifiability:** I did not compute a sensitivity or covariance analysis, so the statements below are judgement, not measured.
+- The current-loop and filter parameters (xf, Te, Kpi, Kii) and the reactive-droop time constants look well determined.
+- The voltage-loop gains Kpv and Kiv moved noticeably between restarts and probably trade off against each other and against Kpi.
+- The power-loop gains Kpp and Kip, and the droop m, are less certain.
+
+**Open issue:** the open-loop replay (measured V and θ driving the model) diverges at about 1 s on every recording tested, including training files. An explicit integration with a smaller step shows the model is well-behaved for the first 0.36 s, so part of the failure is numerical. The rest is not explained. The scorer runs the model closed-loop in the network, where the grid-equivalent replay is the closer proxy and looks good, but the open-loop divergence is a warning sign I did not resolve. I did not check the frequency-response or droop checks, and I did not look at the fault or line-trip recordings with this model.
+
+```json
+{"params": {"Tf": 0.0072366573761046445, "m": 0.04577545664088238, "Tpl": 0.03731089288890784, "Kpp": 1.5833916024406125, "Kip": 7.628965007323993, "n": 0.030392437457392618, "Tql": 0.03949562443497024, "Kpq": 0.8412496700773395, "Kiq": 9.14108000956541, "Kpv": 0.6763971042234791, "Kiv": 1.1172134002229928, "Kpi": 1.2966714551850602, "Kii": 35.58728807967542, "Te": 0.01163312207388283, "xf": 0.16290207502586848, "rf": 0.0, "w0": 376.99111843077515}, "defs": {"vd": "V*cos(delta - theta)", "vq": "-V*sin(delta - theta)", "vr": "Vset + n*(Kpq*(Qs - Qf) + xq - Qf)", "Idref": "Kpv*(vr - vd) + xvd", "Iqref": "Kpv*(0 - vq) + xvq", "det": "rf**2 + xf**2", "Id": "(rf*(ud - vd) + xf*(uq - vq))/det", "Iq": "(-xf*(ud - vd) + rf*(uq - vq))/det", "udref": "Kpi*(Idref - Id) + xid + vd + rf*Id - xf*Iq", "uqref": "Kpi*(Iqref - Iq) + xiq + vq + rf*Iq + xf*Id", "Pe": "vd*Id + vq*Iq", "Qe": "-vd*Iq + vq*Id"}, "states": {"Pf": {"rhs": "(Pe - Pf)/Tf", "init": "P0"}, "Qf": {"rhs": "(Qe - Qf)/Tf", "init": "Q0"}, "Ps": {"rhs": "(Pf - Ps)/Tpl", "init": "P0"}, "xp": {"rhs": "Kip*(Ps - Pf)", "init": "P0"}, "delta": {"rhs": "w0*m*(Kpp*(Ps - Pf) + xp - Pf)", "init": "theta0"}, "Qs": {"rhs": "(Qf - Qs)/Tql", "init": "Q0"}, "xq": {"rhs": "Kiq*(Qs - Qf)", "init": "Q0"}, "xvd": {"rhs": "Kiv*(vr - vd)", "init": "P0/V0"}, "xvq": {"rhs": "Kiv*(0 - vq)", "init": "-Q0/V0"}, "xid": {"rhs": "Kii*(Idref - Id)", "init": "0"}, "xiq": {"rhs": "Kii*(Iqref - Iq)", "init": "0"}, "ud": {"rhs": "(udref - ud)/Te", "init": "V0 + rf*P0/V0 + xf*Q0/V0"}, "uq": {"rhs": "(uqref - uq)/Te", "init": "-rf*Q0/V0 + xf*P0/V0"}}, "outputs": {"P": "Pe", "Q": "Qe"}}
+```

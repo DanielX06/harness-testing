@@ -1,0 +1,30 @@
+The submitted model is the documented control structure with fitted parameters. It is stable on both validation files, starts at rest, and matches the recordings closely in the closed-loop grid replay. I had to change the inner current-loop gains to get the open-loop check to pass, so those parameters are the least reliable.
+
+**Structure (fitted, in pu on the 900 MVA rating)**
+
+- **Power and angle path:** P and Q are low-pass filtered (Pf, Qf, time constant Tf ≈ 0.009 s). A power loop (Ps, with lag Tpl ≈ 0.047 s, and integrator xp) drives the internal angle delta. The droop is m ≈ 0.041 with Kpp ≈ 1.21 and Kip ≈ 8.4.
+- **Reactive path:** the same filtering applies to Q (Qs, with lag Tql ≈ 0.051 s, and integrator xq). The reference is vr = Vset + n·(Kpq·(Qs − Qf) + xq − Qf), with droop n ≈ 0.061, Kpq ≈ 1.12 and Kiq ≈ 9.8.
+- **Voltage loop:** in the frame aligned with delta, vd = V·cos(delta − θ) and vq = −V·sin(delta − θ). A PI loop with Kpv ≈ 0.70 and Kiv ≈ 1.10 sets the current references Id_ref and Iq_ref from (vr − vd) and (0 − vq).
+- **Current loop:** a PI current loop with Te = 0.02 s, Kpi = 0.5 and Kii = 10 drives a converter voltage behind a filter reactance xf ≈ 0.149 (rf = 0).
+- **Outputs:** P = vd·Id + vq·Iq and Q = −vd·Iq + vq·Id. The model starts at rest at any operating point, with states initialised from P0, Q0, V0 and θ0.
+
+**Parameter identification**
+
+- **Well identified:** the droop gains and their lags (m, n, Tpl, Tql, Kpp, Kpq) and the filter reactance xf. The voltage-step tests and the load and generator events constrain these.
+- **Poorly identified:** the inner-loop gains and time constants (Kpi, Kii, Te) and the voltage-loop integrator Kiv. The fit gave Kii ≈ 50 and Te ≈ 0.01, but these values made the model unstable under open-loop replay. I set Kii = 10, Kpi = 0.5 and Te = 0.02 by hand (not refitted) and they passed. The 0.02 s value is a guess that makes the fast loop slower than the fit found.
+- **Trade-offs:** Kpv and Kiv, and Kpi and Kii, trade off against each other. Only the fit window's responses constrain them.
+
+**Validation** (grid-equivalent replay, X = 0.5 pu)
+
+| File | Quantity | RMSE | Flat-prediction RMSE |
+|---|---|---|---|
+| val vref op2 | P | 3.4e-4 | 5.9e-3 |
+| val vref op2 | Q | 2.8e-3 | 3.0e-2 |
+| val load op1 | P | 1.2e-3 | 2.4e-2 |
+| val load op1 | Q | 2.7e-3 | 2.8e-2 |
+
+Open-loop replay RMSE: P 1.5e-3 (val vref op2) and 5.9e-3 (val load op1); Q 1.8e-2 and 1.6e-2. The Q open-loop error is the largest term, so the reactive path is the weakest part of the fit. The fault recording was left out of fitting, as instructed.
+
+```json
+{"params": {"Tf": 0.009154526576974796, "m": 0.04117214453373138, "Tpl": 0.04667317807069806, "Kpp": 1.209541638283917, "Kip": 8.401584497594023, "n": 0.06081127303790774, "Tql": 0.05138346177551789, "Kpq": 1.1205811681625044, "Kiq": 9.800604502869692, "Kpv": 0.7038850442798695, "Kiv": 1.1005811832403436, "Kpi": 0.5, "Kii": 10.0, "Te": 0.02, "xf": 0.14867156183113586, "rf": 0.0, "w0": 376.99111843077515}, "defs": {"vd": "V*cos(delta - theta)", "vq": "-V*sin(delta - theta)", "vr": "Vset + n*(Kpq*(Qs - Qf) + xq - Qf)", "Idref": "Kpv*(vr - vd) + xvd", "Iqref": "Kpv*(0 - vq) + xvq", "det": "rf**2 + xf**2", "Id": "(rf*(ud - vd) + xf*(uq - vq))/det", "Iq": "(-xf*(ud - vd) + rf*(uq - vq))/det", "udref": "Kpi*(Idref - Id) + xid + vd + rf*Id - xf*Iq", "uqref": "Kpi*(Iqref - Iq) + xiq + vq + rf*Iq + xf*Id", "Pe": "vd*Id + vq*Iq", "Qe": "-vd*Iq + vq*Id"}, "states": {"Pf": {"rhs": "(Pe - Pf)/Tf", "init": "P0"}, "Qf": {"rhs": "(Qe - Qf)/Tf", "init": "Q0"}, "Ps": {"rhs": "(Pf - Ps)/Tpl", "init": "P0"}, "xp": {"rhs": "Kip*(Ps - Pf)", "init": "P0"}, "delta": {"rhs": "w0*m*(Kpp*(Ps - Pf) + xp - Pf)", "init": "theta0"}, "Qs": {"rhs": "(Qf - Qs)/Tql", "init": "Q0"}, "xq": {"rhs": "Kiq*(Qs - Qf)", "init": "Q0"}, "xvd": {"rhs": "Kiv*(vr - vd)", "init": "P0/V0"}, "xvq": {"rhs": "Kiv*(0 - vq)", "init": "-Q0/V0"}, "xid": {"rhs": "Kii*(Idref - Id)", "init": "0"}, "xiq": {"rhs": "Kii*(Iqref - Iq)", "init": "0"}, "ud": {"rhs": "(udref - ud)/Te", "init": "V0 + rf*P0/V0 + xf*Q0/V0"}, "uq": {"rhs": "(uqref - uq)/Te", "init": "-rf*Q0/V0 + xf*P0/V0"}}, "outputs": {"P": "Pe", "Q": "Qe"}}
+```

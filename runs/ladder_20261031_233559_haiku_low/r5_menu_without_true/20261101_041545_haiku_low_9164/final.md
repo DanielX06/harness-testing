@@ -1,0 +1,51 @@
+I'm stopping here. The submission is the fitted PI voltage-loop model, but it has a known weakness that I could not resolve within this session.
+
+**Model (submission.json, structure: droop P, no reactive droop, PI voltage loop with ideal current tracking):**
+- Active power: the filtered power `Pf` tracks the injected power with a 0.01 s lag (the fit drove that lag to ~0). The internal angle `delta` moves at `w0·m·(P0 − Pf)`, so P droops on frequency through the angle drift. Fitted m ≈ 0.060.
+- Voltage loop: `vd = V·cos(delta−θ)`, `vq = −V·sin(delta−θ)`. Reference `vr = Vset`. Current references are `Id = Kpv·(vr − vd) + xvd` and `Iq = Kpv·(−vq) + xvq`, where the integrators run `xvd' = Kiv·(vr − vd)` and `xvq' = −Kiv·vq`. Injected `P = vd·Id + vq·Iq` and `Q = vq·Id − vd·Iq`.
+- Fitted: Kpv ≈ 0.69, Kiv ≈ 1.13.
+
+**Identification:**
+- Kpv and Kiv are reasonably determined by the staged setpoint steps. They trade off against each other somewhat.
+- m is moderately determined from the generator-trip recording.
+- The filter Tf went to zero, so it is effectively unidentified and drops out. The reactive droop went to zero in the first structure, so I dropped it rather than keep an unidentified term.
+
+**Validation:**
+- Grid-equivalent replay on the two validation files gives P RMSE of 2e-4 to 6e-4 (flat prediction 6e-3 to 2e-2), Q RMSE about 2.6e-3, and V and θ errors around 1e-3.
+- The fit was stopped at a budget limit, not at convergence.
+
+**Known weakness (important):**
+- In an open-loop replay that drives the model with measured V, θ and Vset, Q drifts by about 1.5 pu RMS on the training recordings, and P drifts by about 0.1 pu on one validation file. The cause is the integrator on `vq`: its steady state depends on the history of the measured angle rather than on V and Vset alone, so in the absence of the grid's feedback it drifts. The grid-equivalent replay does not expose this because the grid corrects V, so it may not reflect how the model behaves in the scorer's closed-loop simulation.
+- Because of this, the steady-state reactive droop (dQ/dV) and the frequency response near 0.1–10 Hz may both be off. I did not check those linearization metrics.
+- A static reactive droop with a voltage lag, which removes the integrator's drift, is the first thing I would try next.
+
+```json
+{
+  "params": {
+    "Tf": 3.131217883548953e-13,
+    "m": 0.059953288296692046,
+    "Kpv": 0.692761419853549,
+    "Kiv": 1.128724196632031,
+    "w0": 376.99111843077515
+  },
+  "defs": {
+    "vd": "V*cos(delta - theta)",
+    "vq": "-V*sin(delta - theta)",
+    "vr": "Vset",
+    "Idref": "Kpv*(vr - vd) + xvd",
+    "Iqref": "Kpv*(0 - vq) + xvq",
+    "Id": "Idref",
+    "Iq": "Iqref",
+    "Pe": "vd*Id + vq*Iq",
+    "Qe": "-vd*Iq + vq*Id"
+  },
+  "states": {
+    "Pf": {"rhs": "(Pe - Pf)/Tf", "init": "P0"},
+    "Qf": {"rhs": "(Qe - Qf)/Tf", "init": "Q0"},
+    "delta": {"rhs": "w0*m*(P0 - Pf)", "init": "theta0"},
+    "xvd": {"rhs": "Kiv*(vr - vd)", "init": "P0/V0"},
+    "xvq": {"rhs": "Kiv*(0 - vq)", "init": "-Q0/V0"}
+  },
+  "outputs": {"P": "Pe", "Q": "Qe"}
+}
+```

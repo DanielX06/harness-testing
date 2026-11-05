@@ -1,0 +1,30 @@
+The model beats the flat baseline on both validation recordings in the grid-equivalent replay. It is a simple droop model with two channels. I did not run `check_submission.py` on the validation files, so the open-loop replay and the at-rest check are unconfirmed.
+
+**Equations**
+- Frequency estimate: xt' = w, with w = (theta − xt)/Tf. This is a low-pass-filtered derivative of the bus angle.
+- Active power: yp' = (−kp·w − yp)/Tp, and P = P0 + yp. This is a frequency droop through a first-order lag.
+- Reactive power: yq' = (kq·(Vset − V) − yq)/Tq, and Q = Q0 + yq. This is a voltage droop through a slow lag.
+- At t = 0, xt = theta0 and yp = yq = 0, so every rhs is zero and P = P0, Q = Q0.
+
+**Fit**
+- I fitted on train/ at a 5 ms sample step, simulating open loop with measured V, theta and Vset.
+- RMSE on the combined P and Q residual was 0.0214 on train and 0.0154 on val.
+- A model that never moves scored 0.0235 on val, so the fit is only moderately better than flat.
+- In the grid-equivalent replay, RMSE on val against the flat model in brackets:
+
+| Recording | P | Q |
+|---|---|---|
+| `A_val_vref_op2` | 6.9e-4 (5.9e-3) | 6.2e-3 (2.95e-2) |
+| `A_val_load_op1` | 8.3e-4 (2.35e-2) | 6.8e-3 (2.76e-2) |
+
+**Parameter identification**
+- **Tq:** poorly identified. It hit its upper bound of 5 s, so the Q response behaves almost like an integrator. kq and Tq trade off against each other.
+- **kp, Tp, Tf:** reasonably identified, but the rejection of angle noise (Tf) and the droop gain (kp) are coupled.
+- **Voltage-dependent P term:** I tried a direct V term on P (kv), and the fit drove it to 0, so I left it out.
+
+```json
+{"params":{"kp":0.04519,"Tp":0.06912,"kq":9.6626,"Tq":5.0,"Tf":0.10069},
+"defs":{"w":"(theta-xt)/Tf"},
+"states":{"xt":{"rhs":"w","init":"theta0"},"yp":{"rhs":"(-kp*w-yp)/Tp","init":"0"},"yq":{"rhs":"(kq*(Vset-V)-yq)/Tq","init":"0"}},
+"outputs":{"P":"P0+yp","Q":"Q0+yq"}}
+```

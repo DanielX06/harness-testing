@@ -1,0 +1,54 @@
+The submission is in `submission.json`. It passes both checks, and on the two validation recordings its errors are well below the flat-model baseline.
+
+**Model (deviations from the operating point: dV = V − V0, dVs = Vset − V0, dθ = θ − θ0)**
+
+- **Active power:** P = P0 + Pf, where Pf is a first-order lag (Tp ≈ 5.5 ms) of `kv·dV + a·(dθ − xt)`. Here xt is a lag (Tt ≈ 23 ms) of dθ, so (dθ − xt) is a high-pass angle/frequency term with a = −1.96 pu/rad. Its gain on dV is small (kv ≈ −0.02).
+- **Reactive power:** Q = Q0 + C·x + D·[dV, dVs, hq], where hq = (dθ − xq)/Th is a high-pass of the angle (Th = 0.02 s). The two states x1 and x2 follow a 2×2 linear system driven by dV, dVs and hq. Its eigenvalues are −0.27 ± 0.73j, so it is stable and lightly damped. Its static gains are roughly +1.6 per pu of V and +1.2 per pu of Vset, with the sign taken from the fit.
+
+**Fit and identifiability**
+
+- The P path is well determined: validation RMSE is about 3–7×10⁻⁴ pu, against about 2×10⁻² for a flat model. The angle gain a is well identified. The time constants Tp and Tt are moderately identified.
+- The Q path is the weak part. It was fitted on the two voltage-reference recordings and checked on the others. Its RMSE on the generator trip was about 0.015 and on the line event about 0.02; on validation it is about 3–6×10⁻³. The coefficients trade off against each other, so individual values such as the 2×2 matrix entries are not physically meaningful. Only the overall response is.
+- I did not identify a physical control structure. The true device's voltage-reference and droop gains are therefore not recovered directly, and the droop values checked by the scorer (dP/dω, dQ/dV) are not independently verified. The model fits the logged behaviour, not the device's internal control law.
+- The Q model is a linear fit to recordings that include large excursions. It should be treated with caution on faults, where the grid-equivalent replay can only follow roughly.
+
+```json
+{
+  "params": {
+    "a": -1.9622,
+    "kv": -0.0201,
+    "Tp": 0.005472,
+    "Tt": 0.02298,
+    "Th": 0.02,
+    "A11": 0.22659496536686857,
+    "A12": -1.682475097663146,
+    "A21": 0.34441953365157923,
+    "A22": -0.7572331667339748,
+    "B11": 0.5151342637867665,
+    "B12": -2.161205001073355,
+    "B13": -0.1110194823319968,
+    "B21": -1.5834260039210,
+    "B22": 0.7666,
+    "B23": -0.0556,
+    "C1": -1.8358,
+    "C2": 0.3448,
+    "D1": 1.4429,
+    "D2": 0.5298,
+    "D3": 0.0361
+  },
+  "defs": {
+    "hq": "((theta-theta0)-xq)/Th"
+  },
+  "states": {
+    "Pf": {"rhs": "(kv*(V-V0)+a*((theta-theta0)-xt)-Pf)/Tp", "init": "0.0"},
+    "xt": {"rhs": "((theta-theta0)-xt)/Tt", "init": "0.0"},
+    "xq": {"rhs": "((theta-theta0)-xq)/Th", "init": "0.0"},
+    "x1": {"rhs": "A11*x1+A12*x2+B11*(V-V0)+B12*(Vset-V0)+B13*hq", "init": "0.0"},
+    "x2": {"rhs": "A21*x1+A22*x2+B21*(V-V0)+B22*(Vset-V0)+B23*hq", "init": "0.0"}
+  },
+  "outputs": {
+    "P": "P0+Pf",
+    "Q": "Q0+C1*x1+C2*x2+D1*(V-V0)+D2*(Vset-V0)+D3*hq"
+  }
+}
+```

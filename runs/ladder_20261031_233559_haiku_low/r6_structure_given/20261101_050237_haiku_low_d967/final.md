@@ -1,0 +1,23 @@
+The submitted model is a stable, at-rest terminal model, but its reactive-power path is not validated. It is worse than a flat predictor on the load recordings, so I would not expect a good score on Q.
+
+**Structure (documented menu, all states start at rest):**
+- **Measurement filters:** P and Q are low-passed (Pf, Qf) with time constant Tf.
+- **Active-power droop:** Ps lags Pf (Tpl) and a PI integrator xp acts on Ps − Pf. The internal angle delta integrates w0·m·(Kpp·(Ps−Pf) + xp − Pf).
+- **Reactive droop:** Qs lags Qf (Tql) and a PI integrator xq acts on Qs − Qf. The voltage reference is vr = Vset + n·(Kpq·(Qs−Qf) + xq − Qf).
+- **Voltage PI loop:** in the internal frame, Idref = Kpv·(vr − vd) + xvd and Iqref = −Kpv·vq + xvq, with integrators xvd and xvq (gain Kiv).
+- **Current PI loop:** drives a converter voltage (ud, uq) through lag Te, behind filter reactance xf. Outputs are Pe = vd·Id + vq·Iq and Qe = −vd·Iq + vq·Id.
+
+**Parameters:**
+- The documented structure was fitted to the staged-test, load and gen-trip windows. The droop parameters (m ≈ 0.041, n ≈ 0.047) and filter time constants (Tpl, Tql ≈ 0.05 s) look reasonably identified.
+- The filter reactance xf ≈ 0.15 is well identified and matches the 0.15 pu value used in the fit.
+- The current-loop gains are poorly identified and were changed by hand. The fitted values (Kpi ≈ 1, Kii = 50) made the open-loop replay blow up within about 0.5 s on every recording, including the fault. I lowered them to Kpi = 0.2 and Kii = 1, the only setting I found that is open-loop stable. This is a hand override, not a fitted result. Later refits drifted back toward high gains and went unstable again.
+- The voltage gains Kpv ≈ 1.13 and Kiv ≈ 2.7 came from the grid-equivalent fit and were not re-fitted after the current-loop change.
+
+**Validation:**
+- Grid-equivalent replay of the first fit (before the gain change) gave P and Q errors about 5–10× below the flat baseline on both validation files.
+- After the gain change, the open-loop replay is stable. P error is about 1–4e-3, against a flat baseline of about 2–23e-3, so P is good.
+- Q error is about 2–4e-2, against a flat baseline of about 1–4e-2, so Q is not better than flat on the load recordings. The Q path needs refitting with the stable current-loop gains; I did not finish that.
+
+```json
+{"params": {"Tf": 0.009884010309513778, "m": 0.0406561795379237, "Tpl": 0.04646119072242438, "Kpp": 1.034770260302923, "Kip": 9.14315611189661, "n": 0.0471821654674584, "Tql": 0.04902906266035456, "Kpq": 1.0021698942683919, "Kiq": 9.7938448210378, "Kpv": 1.1265711396751146, "Kiv": 2.748721020533713, "Kpi": 0.2, "Kii": 1, "Te": 0.009975455178091886, "xf": 0.1499262790833031, "rf": 0.0, "w0": 376.99111843077515}, "defs": {"vd": "V*cos(delta - theta)", "vq": "-V*sin(delta - theta)", "vr": "Vset + n*(Kpq*(Qs - Qf) + xq - Qf)", "Idref": "Kpv*(vr - vd) + xvd", "Iqref": "Kpv*(0 - vq) + xvq", "det": "rf**2 + xf**2", "Id": "(rf*(ud - vd) + xf*(uq - vq))/det", "Iq": "(-xf*(ud - vd) + rf*(uq - vq))/det", "udref": "Kpi*(Idref - Id) + xid + vd + rf*Id - xf*Iq", "uqref": "Kpi*(Iqref - Iq) + xiq + vq + rf*Iq + xf*Id", "Pe": "vd*Id + vq*Iq", "Qe": "-vd*Iq + vq*Id"}, "states": {"Pf": {"rhs": "(Pe - Pf)/Tf", "init": "P0"}, "Qf": {"rhs": "(Qe - Qf)/Tf", "init": "Q0"}, "Ps": {"rhs": "(Pf - Ps)/Tpl", "init": "P0"}, "xp": {"rhs": "Kip*(Ps - Pf)", "init": "P0"}, "delta": {"rhs": "w0*m*(Kpp*(Ps - Pf) + xp - Pf)", "init": "theta0"}, "Qs": {"rhs": "(Qf - Qs)/Tql", "init": "Q0"}, "xq": {"rhs": "Kiq*(Qs - Qf)", "init": "Q0"}, "xvd": {"rhs": "Kiv*(vr - vd)", "init": "P0/V0"}, "xvq": {"rhs": "Kiv*(0 - vq)", "init": "-Q0/V0"}, "xid": {"rhs": "Kii*(Idref - Id)", "init": "0"}, "xiq": {"rhs": "Kii*(Iqref - Iq)", "init": "0"}, "ud": {"rhs": "(udref - ud)/Te", "init": "V0 + rf*P0/V0 + xf*Q0/V0"}, "uq": {"rhs": "(uqref - uq)/Te", "init": "-rf*Q0/V0 + xf*P0/V0"}}, "outputs": {"P": "Pe", "Q": "Qe"}, "notes": "structure_menu blocks: {\"pf\": \"droop_with_power_loop\", \"qv\": \"droop_with_reactive_loop\", \"voltage\": \"pi_voltage_loop\", \"inner\": \"pi_current_loop\"}"}
+```

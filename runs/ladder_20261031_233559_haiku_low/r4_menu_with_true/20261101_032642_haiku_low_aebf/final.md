@@ -1,0 +1,72 @@
+The submitted model is a droop-plus-PI-voltage-loop structure. On both validation recordings it tracks P, Q, V and θ far better than a flat prediction. It passes the scorer's parser and starts at rest.
+
+**Equations** (V, θ are terminal voltage and angle; δ is an internal angle; Pf, Qf are filtered outputs)
+
+- Electrical power from the current references: vd = V cos(δ−θ), vq = −V sin(δ−θ); Pe = vd·Id + vq·Iq, Qe = −vd·Iq + vq·Id.
+- Currents follow PI references (ideal inner loop): Id = Kpv(vr − vd) + xvd, Iq = Kpv(0 − vq) + xvq, with xvd' = Kiv(vr − vd) and xvq' = Kiv(−vq).
+- Reactive droop: vr = Vset + n(Q0 − Qf).
+- Active-power droop: δ' = ω0·m·(P0 − Pf), starting at θ0.
+- First-order filters: Pf' = (Pe − Pf)/Tf and Qf' = (Qe − Qf)/Tf, with Tf ≈ 0 (fitted to numerical zero, so it is effectively unused).
+- Outputs P = Pe, Q = Qe. At t = 0 all rhs are zero and P = P0, Q = Q0.
+
+**Parameters**
+- m ≈ 0.059 (P–frequency droop): reasonably identified from the gen-trip recording.
+- n ≈ 0.038 (Q–V droop): moderately identified; it trades off against Kpv and the setpoint response.
+- Kpv ≈ 0.68 and Kiv ≈ 1.2 (voltage loop): determined by the staged voltage-reference steps; they are less certain and correlated with each other.
+- Tf: unidentified; the fit drove it to zero, so the filter has no effect in this model.
+- Xv is not used in this structure.
+
+**Caveats**
+- Fitted on a 12 s window of the vref and gen-trip recordings only. The fault recording was left out on purpose.
+- The fit was stopped by the time limit, not by convergence, and was still improving slightly. That is the main reason I'd expect some remaining error on held-out cases.
+- Frequency-response and droop checks against the real device were not run.
+
+```json
+{
+  "params": {
+    "Tf": 4.6251455262117295e-14,
+    "m": 0.05902827070187713,
+    "n": 0.038323152806975895,
+    "Kpv": 0.6773027961472793,
+    "Kiv": 1.2024062274181684,
+    "w0": 376.99111843077515
+  },
+  "defs": {
+    "vd": "V*cos(delta - theta)",
+    "vq": "-V*sin(delta - theta)",
+    "vr": "Vset + n*(Q0 - Qf)",
+    "Idref": "Kpv*(vr - vd) + xvd",
+    "Iqref": "Kpv*(0 - vq) + xvq",
+    "Id": "Idref",
+    "Iq": "Iqref",
+    "Pe": "vd*Id + vq*Iq",
+    "Qe": "-vd*Iq + vq*Id"
+  },
+  "states": {
+    "Pf": {
+      "rhs": "(Pe - Pf)/Tf",
+      "init": "P0"
+    },
+    "Qf": {
+      "rhs": "(Qe - Qf)/Tf",
+      "init": "Q0"
+    },
+    "delta": {
+      "rhs": "w0*m*(P0 - Pf)",
+      "init": "theta0"
+    },
+    "xvd": {
+      "rhs": "Kiv*(vr - vd)",
+      "init": "P0/V0"
+    },
+    "xvq": {
+      "rhs": "Kiv*(0 - vq)",
+      "init": "-Q0/V0"
+    }
+  },
+  "outputs": {
+    "P": "Pe",
+    "Q": "Qe"
+  }
+}
+```

@@ -1,0 +1,70 @@
+The submission is a voltage-controlled terminal model with a frequency droop on active power and a reactive droop on the voltage setpoint. It parses, starts at rest, and passes the checker on both validation files. The reactive path is only partly right, though: the open-loop Q error is close to a flat prediction.
+
+**Structure (chosen from the menu, not a freely derived model)**
+- **Active power:** the internal angle `delta` moves as `d(delta)/dt = w0*m*(P0 − Pf)`, so P droops with frequency. `Pf` is a first-order filter of the electrical power `Pe`.
+- **Reactive droop:** the voltage reference is `vr = Vset + n*(Q0 − Qf)`.
+- **Voltage loop:** a PI loop in the internal frame (`Kpv`, `Kiv`) sets the d- and q-currents. The current loop is taken as ideal, so the currents follow their references immediately. `Pe` and `Qe` are computed from the terminal voltage and the internal angle.
+- **Start at rest:** `Pf = P0`, `Qf = Q0`, `delta = theta0`, and the integrators start at `P0/V0` and `−Q0/V0`.
+
+**Fitted parameters**
+- `m` = 0.0594: well identified. It matches the P rise after the generator trip and the slow angle drift.
+- `Kpv` = 0.684 and `Kiv` = 1.18: moderately identified. They set the voltage-step response.
+- `n` = 0.0236: poorly identified. It trades off against the voltage loop gains, and the reactive droop is weak in the fit.
+- `Tf` went to about 0, so the power filter is effectively switched off. This is a flag that the structure may not match the device exactly. It also makes `Pf` nearly algebraic, which could be stiff in the scorer's simulation.
+
+**Validation**
+- Grid-equivalent replay on `A_val_vref_op2` and `A_val_load_op1`: P RMSE about 4e-4 and Q RMSE about 1e-3 to 1.4e-3, against flat-prediction errors of about 2e-2 to 6e-3 for P and 3e-2 for Q.
+- Open-loop check: P is good (RMSE 1.7e-4 and 3.9e-4). Q is only slightly better than flat (2.4e-2 against 3.0e-2, and 2.2e-2 against 2.8e-2). The reactive response to voltage-reference steps is the weakest part of the model.
+- The alternative `voltage_behind_reactance` structure fitted much worse (cost 0.46 of flat, against 0.06 for the chosen one), so I rejected it.
+- I did not try the PI reactive-loop or PI power-loop variants.
+
+```json
+{
+  "params": {
+    "Tf": 2.302062776841535e-12,
+    "m": 0.05940292190801962,
+    "n": 0.023639102739174356,
+    "Kpv": 0.6843796916179407,
+    "Kiv": 1.177482533251609,
+    "w0": 376.99111843077515
+  },
+  "defs": {
+    "vd": "V*cos(delta - theta)",
+    "vq": "-V*sin(delta - theta)",
+    "vr": "Vset + n*(Q0 - Qf)",
+    "Idref": "Kpv*(vr - vd) + xvd",
+    "Iqref": "Kpv*(0 - vq) + xvq",
+    "Id": "Idref",
+    "Iq": "Iqref",
+    "Pe": "vd*Id + vq*Iq",
+    "Qe": "-vd*Iq + vq*Id"
+  },
+  "states": {
+    "Pf": {
+      "rhs": "(Pe - Pf)/Tf",
+      "init": "P0"
+    },
+    "Qf": {
+      "rhs": "(Qe - Qf)/Tf",
+      "init": "Q0"
+    },
+    "delta": {
+      "rhs": "w0*m*(P0 - Pf)",
+      "init": "theta0"
+    },
+    "xvd": {
+      "rhs": "Kiv*(vr - vd)",
+      "init": "P0/V0"
+    },
+    "xvq": {
+      "rhs": "Kiv*(0 - vq)",
+      "init": "-Q0/V0"
+    }
+  },
+  "outputs": {
+    "P": "Pe",
+    "Q": "Qe"
+  },
+  "notes": "structure_menu blocks: {\"pf\": \"droop\", \"qv\": \"droop\", \"voltage\": \"pi_voltage_loop\", \"inner\": \"ideal\"}"
+}
+```

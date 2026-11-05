@@ -1,0 +1,60 @@
+The submission parses, starts at rest, and runs on both validation recordings. I'm submitting this model: it is a linear two-lag reactive model plus a lagged-angle active model. It fits the training data to close to the noise level, which is zero here. Validation error is modest, but I did not iterate further after the first constrained candidate.
+
+**Structure** (u1 = Vset − V0, u2 = V − V0, angle deviations relative to θ0):
+
+- **Q:** Q = Q0 + aQ·u1 + bQ·u2 + c1·x1 + c2·x2, where
+  - x1' = −x1/T1 + g11·u1 + g12·u2
+  - x2' = −x2/T2 + g21·u1 + g22·u2
+  - Two lags give the fast jump on a setpoint step, then the decay toward a steady level.
+- **P:** P = P0 + kv·(V − V0) + cp1·(θ − xa) + cp2·(θ − xb), where
+  - xa' = (θ − xa)/Tp1 and xb' = (θ − xb)/Tp2
+  - (θ − xa) acts as a high-passed angle, i.e. a frequency-droop term. Its effective gain is about −0.045 pu per rad/s of angle drift.
+
+**Fitted values:** aQ 0.0053, bQ 1.63, T1 3.95 s, T2 4.02 s, g11 −18.3, g12 −11.4, g21 −14.1, g22 −10.4, c1 −2.58, c2 3.08; kv −0.011, Tp1 0.023 s, cp1 −1.96, Tp2 0.45 s, cp2 −0.008.
+
+**Identifiability:**
+- The P model is well identified and the residual is at the 0.001 pu level on all training files. Its frequency-droop path depends mainly on the angle-derivative term; the 0.023 s lag is poorly constrained, since it is set against the sample period.
+- The Q model's individual coefficients are poorly identified and trade off strongly. Only the combined steady-state gains are meaningful. An unconstrained fit gave DC gains of order −1000 pu/pu, which I rejected. I then constrained the DC voltage gain to a droop of −Kd (Kd = 3, 10, 30 all fit equally well); I chose Kd = 10, giving dQ/dV ≈ −11 and dQ/dVs ≈ +11. That droop value is the least certain part of the model.
+- The fault and generator-trip recordings are poorly reproduced, especially in Q. The fault's immediate Q drop is not captured, and a voltage collapse of this size is outside what the linear form can represent.
+
+**Validation (grid-equivalent replay, X = 0.5 pu):**
+- vref_op2: P RMSE 6.9e-4, Q RMSE 4.9e-3 (flat baseline 2.9e-2), V and θ well tracked.
+- load_op1: P RMSE 2.1e-3, Q RMSE 8.9e-3 (flat baseline 2.8e-2).
+
+The Q error is the main weakness, and the steady-state dQ/dV check depends on the constrained droop choice.
+
+```json
+{
+  "params": {
+    "aQ": 0.005312258113939388,
+    "bQ": 1.6331856491193457,
+    "T1": 3.947697177061801,
+    "T2": 4.015148155514628,
+    "g11": -18.25002757924513,
+    "g12": -11.413577068860837,
+    "g21": -14.133142901114146,
+    "g22": -10.40831132462494,
+    "c1": -2.5794229202592502,
+    "c2": 3.084713838780991,
+    "kv": -0.01113513810,
+    "Tp1": 0.0231846495,
+    "cp1": -1.958210,
+    "Tp2": 0.4502126,
+    "cp2": -0.00839055164
+  },
+  "defs": {
+    "u1": "Vset-V0",
+    "u2": "V-V0"
+  },
+  "states": {
+    "x1": {"rhs": "-x1/T1+g11*u1+g12*u2", "init": "0.0"},
+    "x2": {"rhs": "-x2/T2+g21*u1+g22*u2", "init": "0.0"},
+    "xa": {"rhs": "(theta-xa)/Tp1", "init": "theta0"},
+    "xb": {"rhs": "(theta-xb)/Tp2", "init": "theta0"}
+  },
+  "outputs": {
+    "P": "P0+kv*(V-V0)+cp1*(theta-xa)+cp2*(theta-xb)",
+    "Q": "Q0+aQ*u1+bQ*u2+c1*x1+c2*x2"
+  }
+}
+```

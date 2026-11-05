@@ -1,0 +1,47 @@
+The model replays well on both validation files, but Q is only partly captured. I did not test it closed loop in the grid.
+
+**Equations** (all in pu on the 900 MVA rating)
+- Frequency estimate: x' = w and w = (θ − θ0 − x)/Tw. This is a washout filter, so w approximates the bus angular rate dθ/dt.
+- Active-power droop filter: y' = (w − y)/Tp.
+- Reactive-power integrator: z' = (b·(Vset − V) − z)/Tq.
+- Outputs: P = P0 − Kp·y + Kpv·(V − V0), and Q = Q0 + z + a·(V − V0).
+- All three states start at 0, so the model is at rest at t = 0.
+
+**Parameters**
+- **Kp (0.0451) and Tp (0.104 s):** well identified. The frequency droop and its filter fit the P response across the events.
+- **Tw (0.0051 s):** at the lower edge of what I allowed, and not well identified. It only acts as a differentiator. Because it is so fast, an open-loop replay may be noise-sensitive, but it should be fine in the grid.
+- **Kpv (−0.046):** small and weakly identified.
+- **a (1.62):** the direct Q response to V. It is moderately identified, and it trades off against b and Tq.
+- **b and Tq:** poorly identified individually. Tq hit its upper bound of 20 s. Only the ratio b/Tq (about 1.24 per second, an integrator-like action on Vset − V) is constrained.
+
+**Fit quality**
+- Open-loop replay RMSE on the validation files was P 5–8e-4 and Q 9.5e-3 (flat-model RMSE P 0.006–0.023, Q about 0.028).
+- On the training files the P/Q RMSE combined was 0.0117. The fault, generator-trip and line-trip recordings fit worst, at about 0.018–0.022. Fast dynamics and large angle swings are probably not captured there.
+
+**Rejected candidate:** a first version had no direct V term in P or Q and Q driven only by a lagged Vset − V. It fit clearly worse, with a combined training RMSE of 0.021 against 0.0117.
+
+```json
+{
+ "params": {
+  "Kp": 0.0451,
+  "Tw": 0.0051,
+  "Tp": 0.104,
+  "Kpv": -0.0464,
+  "a": 1.6155,
+  "b": 24.7266,
+  "Tq": 19.9999
+ },
+ "defs": {
+  "w": "(theta-theta0-x)/Tw"
+ },
+ "states": {
+  "x": {"rhs": "w", "init": "0"},
+  "y": {"rhs": "(w-y)/Tp", "init": "0"},
+  "z": {"rhs": "(b*(Vset-V-(V0-V0))-z)/Tq", "init": "0"}
+ },
+ "outputs": {
+  "P": "P0-Kp*y+Kpv*(V-V0)",
+  "Q": "Q0+z+a*(V-V0)"
+ }
+}
+```

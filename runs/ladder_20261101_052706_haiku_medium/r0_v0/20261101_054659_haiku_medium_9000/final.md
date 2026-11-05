@@ -1,0 +1,80 @@
+The submission is a two-block linear model for P and Q, driven by the terminal voltage, the setpoint, and a washed-out angle rate, with a current-limit clamp on Q. It parses, starts at rest, and replays the validation files with P errors of 2–6e-4 and Q errors of 3–8e-3 (flat-signal scale 0.02–0.03). I did not run the closed-loop grid simulation, so stability in the scorer is unverified.
+
+**Structure**
+- Let dV = V − V0, dS = Vset − V0, and W = (θ − θf)/Tw, where θf is a washout state (Tw = 2 ms) that approximates dθ/dt.
+- **Q:** two states xq1, xq2 with ẋq = Aq·xq + Bq·[dV, dS, W]. Output Qlin = Q0 + Cq·xq + dqW·W, then clamped to ±Qlim, where Qlim = √((Imax·V)² − P²) and Imax = 0.93 pu.
+- **P:** two states xp1, xp2 with ẋp = Ap·xp + Bp·[dV, dS, W], output P = P0 + Cp·xp + dpW·W.
+- Both blocks have no instantaneous feedthrough from V or Vset, so the model has no direct positive V→Q path that could feed back on the grid.
+
+**Steady-state behaviour**
+- dQ/dV ≈ −21 pu/pu and dQ/dVset ≈ +21 pu/pu. This is a droop with Kq ≈ 20, consistent with the staged steps once the grid's voltage response to Q is accounted for.
+- dP/dω ≈ −0.045 pu per rad/s (about −0.28 pu/Hz). This is the active-power droop.
+- dP/dV ≈ −0.30 pu/pu.
+- The Q poles are real (−1.1 and −0.6 1/s). The P poles are complex at about −4 ± 1.7j.
+
+**Identification quality**
+- **Well identified:** the steady Q droop (through the staged setpoint tests), the P droop with angle rate, and the P dynamics, which fit to noise-like residuals.
+- **Poorly identified:**
+  - The Q dynamics are a generic 2-state fit, not a physical controller. Their internal structure (which states correspond to which controller parts) is not identifiable from these data.
+  - The fast Q overshoot in the fault record is only partly captured (train-fault rms about 0.012 with the constrained form).
+  - Imax = 0.93 is inferred from one fault plateau. It sets the Q limit in large disturbances, so it matters most for the scorer's larger events.
+  - Tw = 2 ms is a numerical choice, not identified.
+  - The W gains in Q are tiny and probably not significant.
+  - The P gain on Vset is +0.27 pu/pu at DC. I did not confirm its sign physically.
+- **Rejected candidates:** a single lagged droop (fit well on the staged tests but gave Q errors of 0.02–0.03 on the fault, line-trip and generator-trip recordings); a model with an instantaneous positive V feedthrough (fit slightly better but gave a fast positive loop, so I dropped it); and a Q model with an active-power term (no improvement).
+
+```json
+{
+ "params": {
+  "Tw": 0.002,
+  "Imax": 0.93,
+  "a11": -1.279239447666409,
+  "a12": 1.1513695623494533,
+  "a21": -0.11505655752290385,
+  "a22": -0.39393528382364484,
+  "bq11": -3.547308093994571,
+  "bq12": -3.751800674637226,
+  "bq13": -0.3444491590868118,
+  "bq21": 5.033650317887315,
+  "bq22": -3.7388092908507913,
+  "bq23": 0.06751584272986533,
+  "cq1": -1.7186709045588442,
+  "cq2": -0.8489791046667993,
+  "dqW": 0.000732525185654485,
+  "p11": -3.5827401331384734,
+  "p12": 4.445858642106103,
+  "p21": -0.6577956510554394,
+  "p22": -4.3861881393945925,
+  "bp11": -0.04769442618357995,
+  "bp12": -2.568369585609961,
+  "bp13": 0.04585137542595574,
+  "bp21": 0.4915951079740106,
+  "bp22": 0.9834595388767374,
+  "bp23": 0.043882936331275976,
+  "cp1": -1.6879301010953118,
+  "cp2": -1.2619549210972936,
+  "dpW": -8.380578001700968e-05
+ },
+ "defs": {
+  "dV": "V-V0",
+  "dS": "Vset-V0",
+  "W": "(theta-thf)/Tw",
+  "Plin": "P0+cp1*xp1+cp2*xp2+dpW*W",
+  "Pm": "Plin",
+  "Qlin": "Q0+cq1*xq1+cq2*xq2+dqW*W",
+  "Qlim": "sqrt(Max((Imax*V)**2-Pm**2,0.0))",
+  "Qm": "Min(Max(Qlin,-Qlim),Qlim)"
+ },
+ "states": {
+  "xq1": {"rhs": "a11*xq1+a12*xq2+bq11*dV+bq12*dS+bq13*W", "init": "0.0"},
+  "xq2": {"rhs": "a21*xq1+a22*xq2+bq21*dV+bq22*dS+bq23*W", "init": "0.0"},
+  "xp1": {"rhs": "p11*xp1+p12*xp2+bp11*dV+bp12*dS+bp13*W", "init": "0.0"},
+  "xp2": {"rhs": "p21*xp1+p22*xp2+bp21*dV+bp22*dS+bp23*W", "init": "0.0"},
+  "thf": {"rhs": "(theta-thf)/Tw", "init": "theta0"}
+ },
+ "outputs": {
+  "P": "Pm",
+  "Q": "Qm"
+ }
+}
+```
