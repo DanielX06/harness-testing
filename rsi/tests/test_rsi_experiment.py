@@ -265,6 +265,8 @@ summary = open(os.path.join(experiment, "summary.md")).read()
 check(summary.count("\n| ") == 6 and "| 1 | h001_confirm | h001 / h000 | 4 / 4 |" in summary and "| accepted |" in summary
       and "| 2 | - | h002 / h001 |" in summary, "summary.md has the baseline, h001's two blocks, h002 and h003")
 check(not client.script, "every scripted updater reply was used (self-test rounds included)")
+check(all("run_python" in {tool["name"] for tool in request["tools"]} for request in client.requests),
+      "the updater has run_python by default")
 all_runs = R.ExperimentFolder(experiment).run_records()
 updater_spend = sum(read_json(os.path.join(experiment, "candidates", name, "proposal.json"))["updater"]["spent_usd"]
                     for name in ("h001", "h002", "h003"))
@@ -339,13 +341,15 @@ check(os.path.isdir(os.path.join(experiment, "candidates", "h002"))
 
 R.resume_experiment(experiment, {"iters": 3}, client=FakeClient(CAREFUL + CAREFUL), launcher=FakeLauncher(), **FAST)
 history = read_lines(os.path.join(experiment, "history.jsonl"))
-check([record["outcome"] for record in history] == ["accepted", "rejected_early", "rejected_early"]
+check([record["outcome"] for record in history] == ["accepted", "rejected_early", "duplicate"]
       and [record["iteration"] for record in history] == [1, 2, 3],
       f"resume 2: outcomes {[record['outcome'] for record in history]}, iterations 1 to 3 once each")
+check(history[2]["note"].startswith("the same harness as h002 (rejected early)") and "n_candidate" not in history[2],
+      "h003 is the same harness as the rejected h002, so it is not run, and the note says which")
 interrupted = [name for name in os.listdir(os.path.join(experiment, "candidates")) if name.startswith("h002.interrupted_")]
 check(len(interrupted) == 1, "the interrupted h002 was moved aside and made again")
 check([line["block"] for line in read_lines(os.path.join(experiment, "monitor.jsonl"))]
-      == ["h000_baseline", "h001_test", "h001_confirm", "h002_test", "h003_test"], "monitor.jsonl has one line per block, no repeats")
+      == ["h000_baseline", "h001_test", "h001_confirm", "h002_test"], "monitor.jsonl has one line per block, no repeats")
 cycles = read_lines(os.path.join(experiment, "cycles.jsonl"))
 check([cycle["candidate"] for cycle in cycles] == ["h001", "h002", "h003"] and cycles[2]["same_harness_as"] == ["h002"]
       and cycles[2]["same_file_as"] == {"method.md": ["h002"]} and not cycles[1]["same_harness_as"] and not cycles[0]["same_file_as"],
@@ -360,7 +364,7 @@ updater_spend = sum(read_json(os.path.join(experiment, "candidates", name, "prop
                     for name in ("h001", "h002", "h003"))
 interrupted_spend = read_json(os.path.join(experiment, "candidates", interrupted[0], "transcript.json"))["spent_usd"]
 run_count = len(folder.run_records())
-check(interrupted_spend > 0 and run_count == 4 + 8 + 8 + 4 + 4
+check(interrupted_spend > 0 and run_count == 4 + 8 + 8 + 4
       and abs(state["spent_usd"] - (0.02 * run_count + updater_spend + interrupted_spend)) < 1e-3,
       f"spend is counted once from the files, the interrupted proposal included (${state['spent_usd']:.3f}, {run_count} runs)")
 config = read_json(os.path.join(experiment, "config.json"))
@@ -369,12 +373,25 @@ check(len(config["resumes"]) == 2 and config["resumes"][1]["changed"] == {} and 
       "config.json records both resumes and keeps the original settings")
 
 lines_before = len(read_lines(os.path.join(experiment, "history.jsonl")))
+config = read_json(os.path.join(experiment, "config.json"))
+for key in ("updater_python", "updater_max_turns"):         # as in a config.json written before these settings existed
+    del config["settings"][key]
+write_json(os.path.join(experiment, "config.json"), config)
 R.resume_experiment(experiment, client=FakeClient([]), launcher=FakeLauncher(), **FAST)
 check(len(read_lines(os.path.join(experiment, "history.jsonl"))) == lines_before, "resuming a finished experiment changes nothing")
-R.resume_experiment(experiment, {"iters": 4}, client=FakeClient(CAREFUL), launcher=FakeLauncher(), **FAST)
+settings_now = read_json(os.path.join(experiment, "config.json"))["settings"]
+check(settings_now["updater_python"] is False and settings_now["updater_max_turns"] == 20,
+      "an experiment from before the sandbox resumes as it ran: no run_python, 20 updater turns")
+client = FakeClient(CAREFUL)
+R.resume_experiment(experiment, {"iters": 4}, client=client, launcher=FakeLauncher(), **FAST)
 cycles = read_lines(os.path.join(experiment, "cycles.jsonl"))
-check(len(read_lines(os.path.join(experiment, "history.jsonl"))) == 4 and cycles[3]["same_harness_as"] == ["h002", "h003"],
-      "--iters 4 adds one iteration, and a third identical proposal matches both earlier ones")
+history = read_lines(os.path.join(experiment, "history.jsonl"))
+check(len(history) == 4 and history[3]["outcome"] == "duplicate" and cycles[3]["same_harness_as"] == ["h002", "h003"],
+      "--iters 4 adds one iteration, and a third identical proposal matches both earlier ones and is not run either")
+context4 = open(os.path.join(experiment, "candidates", "h004", "context.md")).read()
+check("Attempt 3: h003 from h001, never run: it was the same harness as an earlier one" in context4
+      and "Note: the same harness as h002" in context4 and "run_python" not in {tool["name"] for tool in client.requests[0]["tools"]},
+      "the next updater sees the duplicate and its note; the resumed old experiment offers no run_python")
 for argv in (["--resume", experiment, "--pairs", "10"],):
     try:
         R.parse_arguments(argv)

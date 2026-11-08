@@ -18,6 +18,9 @@ finished run only the composite, the TD per held-out run and channel and a plain
 of the best and the worst run; then the history of earlier attempts. FR, PAR, grid M, grid A's held-out runs,
 meta.json's score components and anything in private.json never go in, and the build stops if one of their
 names shows up in text it generated itself.
+
+With python_tool=True the updater also gets run_python, a sandbox to build and test its change in
+(rsi/updater_sandbox.py), and the prompt says so.
 """
 import argparse
 import base64
@@ -56,6 +59,7 @@ OUTCOME_DESCRIPTIONS = {
     "rejected_early": "rejected early: after the first pairs of runs it was not ahead at all",
     "reverted": "passed the first block of runs, then failed the confirmation block, so it was not kept",
     "invalid": "never run: it failed the checks made before any solver run",
+    "duplicate": "never run: it was the same harness as an earlier one (the note names it)",
 }
 # History fields the RSI loop writes itself (the rest is the updater's own text and its diff). A hidden name in
 # one of these means the loop put something there it should not have, so the build stops.
@@ -66,7 +70,7 @@ UPDATER_TOOLS = [
     {"name": "write_file",
      "description": "Write one file of the new harness with its complete content. path is relative to the "
                     "harness folder: method.md, system.md when it is editable, or tools/<name>.py. Files you "
-                    "do not write stay as they are.",
+                    "do not write stay as they are; writing a path again replaces that file.",
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
                       "required": ["path", "content"]}},
     {"name": "delete_file",
@@ -80,9 +84,38 @@ UPDATER_TOOLS = [
      "input_schema": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}},
     {"name": "finish",
      "description": "Submit the new harness and the report you wrote with write_proposal. It takes no arguments. "
-                    "Call it after all your write_file, delete_file and write_proposal calls.",
+                    "Call it after all your write_file, delete_file and write_proposal calls. It refuses a harness "
+                    "that is unchanged, or that differs from the current one only in whitespace or blank lines.",
      "input_schema": {"type": "object", "properties": {}}},
 ]
+
+# the updater's run_python output is cut to its last this-many characters: smaller than the solver's, since the
+# updater's conversation already starts with the whole context
+UPDATER_OUTPUT_CHARS = 8000
+RUN_PYTHON_TOOL = {
+    "name": "run_python",
+    "description": "Run Python code in your sandbox: train/, val/, runs.json, dataset.json, tools/ as you have "
+                   "edited it so far, and submissions/ (the part 2 runs' submissions and scores.json). Returns "
+                   f"stdout and stderr, cut to the last {UPDATER_OUTPUT_CHARS} characters. It never changes the "
+                   "harness: only write_file and delete_file do.",
+    "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}}
+SANDBOX_TEXT = (
+    "You also have run_python, a sandbox to build and test your change in. It holds what the solver's working "
+    "directory holds (train/, val/, runs.json, dataset.json, and tools/ with your write_file and delete_file edits "
+    "applied before every call) plus submissions/: the submission.json of each run in the part 2 table, as "
+    "<run id>.json, and submissions/scores.json with the composite, TD and failures part 2 shows for each. Each call "
+    "is a fresh Python process with numpy, pandas, scipy and sympy, no network, a {{CALL_TIME_LIMIT_S}} s limit, and "
+    "output cut to its last {{UPDATER_OUTPUT_CHARS}} characters. Files your code writes stay for your later calls, "
+    "except in tools/, which is rebuilt from your edits before each call. Only write_file and delete_file change "
+    "the harness.")
+TEST_STEP_WITH_SANDBOX = (
+    "4. Run what you build before you submit it; a tool you have not run is a guess. Use run_python to run it the way "
+    "the solver would, on the full recordings and on the submissions in submissions/. Check that it finishes well "
+    "inside {{CALL_TIME_LIMIT_S}} s, that its output is right, and that what it tells the solver separates the "
+    "better-scoring submissions from the worse ones.")
+TEST_STEP_WITHOUT_SANDBOX = (
+    "4. You cannot run code here, so read every tool you write line by line, as the solver will run it, before you "
+    "submit.")
 
 
 @dataclass
@@ -91,7 +124,7 @@ class UpdaterContext:
     user_content: list      # the user message: the diagram, then parts 1 to 3 as text blocks
     readable_markdown: str  # the same as one readable document, with the image as a placeholder line
     stats: dict
-    tools: list             # write_file, delete_file, write_proposal, finish
+    tools: list             # write_file, delete_file, write_proposal, finish, and run_python with the sandbox
 
 
 class LeakError(RuntimeError):
@@ -469,9 +502,13 @@ def history_text(records, show_in_full=None):
     return "\n\n".join(parts)
 
 
-def updater_instructions(model, effort, scope, lowest_score, highest_score):
-    """updater_prompt.md with its placeholders filled in."""
+def updater_instructions(model, effort, scope, lowest_score, highest_score, python_tool=False):
+    """updater_prompt.md with its placeholders filled in. python_tool: the updater has run_python."""
     template = read_text(UPDATER_PROMPT_FILE)
+    if python_tool:
+        template = template.replace("{{SANDBOX}}", SANDBOX_TEXT).replace("{{TEST_STEP}}", TEST_STEP_WITH_SANDBOX)
+    else:
+        template = template.replace("{{SANDBOX}}\n\n", "").replace("{{TEST_STEP}}", TEST_STEP_WITHOUT_SANDBOX)
     note = ("It is a small, fast model, so short and concrete instructions work better than long ones, and a "
             "tool that does a job reliably works better than an instruction asking the solver to do that job."
             if "haiku" in model else
@@ -491,6 +528,7 @@ def updater_instructions(model, effort, scope, lowest_score, highest_score):
     for key, value in {"SOLVER_MODEL": model_display_name(model), "SOLVER_EFFORT": effort, "SOLVER_NOTE": note,
                        "EDITABLE": editable, "SCORE_MIN": f"{lowest_score:.2f}", "SCORE_MAX": f"{highest_score:.2f}",
                        "CALL_TIME_LIMIT_S": str(CALL_TIME_LIMIT_S), "TOOL_OUTPUT_CHARS": str(TOOL_OUTPUT_CHARS),
+                       "UPDATER_OUTPUT_CHARS": str(UPDATER_OUTPUT_CHARS),
                        "SOLVER_BUDGET_USD": f"{API_BUDGET_USD:.0f}"}.items():
         template = template.replace("{{" + key + "}}", value)
     unfilled = re.findall(r"\{\{[A-Z_]+\}\}", template)
@@ -505,7 +543,8 @@ class UpdaterContextBuilder:
 
     run_paths: run folders and/or folders of run folders, all made with harness_dir. The newest `newest_runs`
     finished runs go in the table. If the whole context is estimated above `token_budget` tokens, it is cut
-    down in steps, cheapest first (see REDUCTION_PLANS)."""
+    down in steps, cheapest first (see REDUCTION_PLANS). python_tool: the updater gets run_python (the caller
+    provides the sandbox), and its instructions describe it."""
 
     # cheapest reductions first; the first plan that fits the budget is used
     REDUCTION_PLANS = (
@@ -518,13 +557,13 @@ class UpdaterContextBuilder:
     )
 
     def __init__(self, run_paths, harness_dir, scope="tools", history=None, newest_runs=20, tool_output_chars=2000,
-                 token_budget=80000, allow_other_harness=False, scorer_config=RSI_SCORER_CONFIG):
+                 token_budget=80000, allow_other_harness=False, scorer_config=RSI_SCORER_CONFIG, python_tool=False):
         if scope not in ("tools", "all"):
             raise ValueError("scope must be tools or all")
         self.run_paths, self.harness_dir, self.scope = run_paths, os.path.abspath(harness_dir), scope
         self.history = history or []
         self.newest_runs, self.tool_output_chars, self.token_budget = newest_runs, tool_output_chars, token_budget
-        self.allow_other_harness = allow_other_harness
+        self.allow_other_harness, self.python_tool = allow_other_harness, python_tool
         self.hidden_pattern = hidden_score_names_pattern(scorer_config)
         self.warnings = []
         self.names_removed = 0
@@ -539,7 +578,7 @@ class UpdaterContextBuilder:
             raise ValueError("none of the runs has score/public.json")
 
         system_prompt = updater_instructions(model, effort, self.scope, min(run["composite"] for run in scored),
-                                             max(run["composite"] for run in scored))
+                                             max(run["composite"] for run in scored), self.python_tool)
         check_generated_text("the updater prompt", system_prompt, self.hidden_pattern)
         part1 = solver_view_text(self.harness_dir, noise, self.scope)
         check_generated_text("part 1 (the solver's files)", part1, self.hidden_pattern)
@@ -580,8 +619,10 @@ class UpdaterContextBuilder:
                  "tokens_est": {**{key: math.ceil(value / CHARS_PER_TOKEN) for key, value in sizes.items()},
                                 "image": diagram_tokens, "total": total_tokens, "chars_per_token_assumed": CHARS_PER_TOKEN},
                  "budget": self.token_budget, "reductions": reductions, "tool_output_chars_cut": characters_cut,
-                 "names_removed": self.names_removed, "history_records": len(self.history), "warnings": self.warnings}
-        return UpdaterContext(system_prompt, user_content, markdown, stats, UPDATER_TOOLS)
+                 "names_removed": self.names_removed, "history_records": len(self.history), "warnings": self.warnings,
+                 "python_tool": self.python_tool}
+        tools = UPDATER_TOOLS + ([RUN_PYTHON_TOOL] if self.python_tool else [])
+        return UpdaterContext(system_prompt, user_content, markdown, stats, tools)
 
     def _load_runs(self):
         summaries = [load_run_summary(folder) for folder in find_run_folders(self.run_paths)]
@@ -668,9 +709,11 @@ def main():
     parser.add_argument("--config", default=str(RSI_SCORER_CONFIG), help="scorer config whose hidden grids the leak check guards")
     parser.add_argument("--count-tokens", action="store_true", help="exact count from the API (free; needs ANTHROPIC_API_KEY)")
     parser.add_argument("--model", default="claude-haiku-5-5", help="updater model, for --count-tokens")
+    parser.add_argument("--python", action="store_true", help="the context as it is when the updater has run_python")
     options = parser.parse_args()
     context = UpdaterContextBuilder(options.runs, options.harness, options.scope, read_history(options.history),
-                                    options.last, options.cut, options.budget, options.allow_mismatch, options.config).build()
+                                    options.last, options.cut, options.budget, options.allow_mismatch, options.config,
+                                    options.python).build()
     stats = context.stats
     if options.count_tokens:
         import anthropic

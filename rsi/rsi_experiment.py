@@ -12,7 +12,9 @@ On a Mac, start it as `caffeinate -i python rsi/rsi_experiment.py ...` so the ma
 Before the first iteration, --baseline-runs runs of the starting harness give the first updater something to read.
 Each iteration:
   1. Propose (harness_proposal.py). The updater reads the newest runs of the current harness and the history of
-     earlier attempts, and edits a copy. A copy that fails a check is never run.
+     earlier attempts, and edits a copy, with a Python sandbox to build and test its change in
+     (--no-updater-python takes that away). A copy that fails a check is never run, and neither is one that is
+     the same harness as an earlier one (trailing whitespace and blank lines ignored): its outcome is "duplicate".
   2. Test block. Pairs of fresh runs, one of the candidate and one of the current harness in each pair, started
      together (with --parallel 2 the two runs of a pair run at the same time). After --early-stop-pairs pairs, a
      candidate whose mean composite is not below the current harness's is rejected early. Otherwise, after
@@ -40,8 +42,10 @@ Resuming. Every run, proposal and decision is on disk, and --resume carries on f
 are read from history.jsonl, a saved proposal is reused, scored runs are kept, crashed or stopped runs are resumed,
 and runs still going from a loop that was killed are waited for. Decisions use fixed pairs (the first
 --early-stop-pairs, then all --pairs), so a resumed loop decides exactly what an uninterrupted one would.
---resume takes only --iters, --patience, --max-usd, --parallel, --workers, --updater-max-usd and --max-resumes; the
-rest comes from config.json, which records each resume. loop.lock stops two loops sharing a folder.
+--resume takes only --iters, --patience, --max-usd, --parallel, --workers, --updater-max-usd, --updater-max-turns and
+--max-resumes; the rest comes from config.json, which records each resume. An experiment started before the updater
+had a sandbox (Nov 2026) resumes as it ran: no sandbox and 20 updater turns. loop.lock stops two loops sharing a
+folder.
 
 Spend is always recomputed from the files: every solver run's meta.json (crashed and replaced runs included) and
 every proposal's updater cost (interrupted proposals included).
@@ -80,7 +84,7 @@ from dataclasses import asdict, dataclass, field, fields
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the repository root
 from common.api_pricing import resolve_effort, resolve_model_id  # noqa: E402
-from common.harness_files import copy_harness, harness_fingerprint  # noqa: E402
+from common.harness_files import copy_harness, harness_content_fingerprint, harness_fingerprint  # noqa: E402
 from common.hidden_names import remove_hidden_device_names  # noqa: E402
 from common.project_paths import (DEFAULT_EXPERIMENTS_DIR, RSI_SCORER_CONFIG, SOLVER_RUN_SCRIPT,  # noqa: E402
                                   STARTING_HARNESS_DIR)
@@ -91,9 +95,17 @@ from rsi.updater_context import hidden_score_names_pattern, read_history  # noqa
 from solver.python_sandbox import SandboxUnavailable  # noqa: E402
 from solver.solver_run import write_json_atomically  # noqa: E402
 
-RESUMABLE_SETTINGS = ("iters", "patience", "max_usd", "parallel", "workers", "updater_max_usd", "max_resumes")
+RESUMABLE_SETTINGS = ("iters", "patience", "max_usd", "parallel", "workers", "updater_max_usd", "updater_max_turns",
+                      "max_resumes")
+# settings added after the first experiments, and the value an experiment that predates each one ran with
+SETTINGS_BEFORE_THEY_EXISTED = {"updater_python": False, "updater_max_turns": 20}
 WHY_NOT_RUN = {"no_change": "the updater changed nothing", "no_finish": "the updater did not call finish",
-               "over_budget": "the updater ran past its budget"}
+               "over_budget": "the updater ran past its budget",
+               "context_full": "the updater's conversation outgrew its context before it called finish"}
+# how a duplicate's note names the outcome of the harness it repeats
+OUTCOME_WORDS = {"accepted": "kept", "rejected": "rejected", "rejected_early": "rejected early",
+                 "reverted": "reverted after its confirmation block", "invalid": "never run",
+                 "duplicate": "never run"}
 INFRASTRUCTURE_EXIT_CODE = 3
 ARMS = ("candidate", "current")
 
@@ -122,6 +134,8 @@ class ExperimentSettings:
     updater_model: str = "claude-haiku-5-5"
     updater_effort: str = "low"
     updater_max_usd: float = 2.0            # one proposal stops past this cost
+    updater_max_turns: int = 40             # one proposal stops after this many updater turns
+    updater_python: bool = True             # the updater gets run_python (rsi/updater_sandbox.py)
     newest_runs: int = 20                   # how many of the current harness's runs the updater reads
     smoke: str = "docker"                   # how harness_proposal.py runs the candidate's checker
     smoke_python: str | None = None
@@ -826,7 +840,8 @@ class RsiExperiment:
                                      max_usd=settings.updater_max_usd, smoke=settings.smoke,
                                      smoke_python=settings.smoke_python, client=self.client,
                                      newest_runs=settings.newest_runs, self_test=settings.self_test,
-                                     scorer_config=settings.scorer_config)
+                                     scorer_config=settings.scorer_config, python_tool=settings.updater_python,
+                                     max_turns=settings.updater_max_turns)
         except SandboxUnavailable as error:
             raise InfrastructureError(f"the candidate's checker could not run: {error}. Start Docker, then --resume.") from error
 
@@ -850,6 +865,12 @@ class RsiExperiment:
             record.update(outcome="invalid", note=self.scrub(why)[:600])
             self.log(f"   {name} is not run: {record['note']}")
             return record, cycle
+        duplicate_of = self._duplicate_of(iteration, name, current)
+        if duplicate_of:
+            record.update(outcome="duplicate", note=f"the same harness as {duplicate_of}, apart from trailing "
+                                                    "whitespace and blank lines, so it was not run again")
+            self.log(f"   {name} is not run: {record['note']}")
+            return record, cycle
 
         arms = {"candidate": (name, self.folder.harness_dir(name)), "current": (current, self.folder.harness_dir(current))}
         shown = test = self._paired_block(iteration, "test", arms, self.settings.pairs)
@@ -869,6 +890,24 @@ class RsiExperiment:
                       fail_rate_candidate=failures_candidate, fail_rate_current=failures_current)
         self.log(f"   {name} {outcome}")
         return record, cycle
+
+    def _duplicate_of(self, iteration, name, current):
+        """'h019 (rejected)' if the candidate is, apart from trailing whitespace and blank lines, the same harness as
+        the current one or an earlier one, else None. Every earlier harness has been measured already (or was
+        invalid, and would be again), so running it again would only re-measure it."""
+        candidate = harness_content_fingerprint(self.folder.harness_dir(name))
+        outcomes = {record["candidate"]: record.get("outcome") for record in read_jsonl(self.folder.history)}
+        for number in range(iteration):
+            earlier = f"h{number:03d}"
+            if not os.path.isdir(self.folder.harness_dir(earlier)):
+                continue
+            if harness_content_fingerprint(self.folder.harness_dir(earlier)) == candidate:
+                if earlier == current:
+                    return f"{earlier} (the current harness)"
+                if earlier == "h000":
+                    return "h000 (the starting harness)"
+                return f"{earlier} ({OUTCOME_WORDS.get(outcomes.get(earlier), outcomes.get(earlier) or 'an earlier attempt')})"
+        return None
 
     def _paired_block(self, iteration, kind, arms, pair_count):
         """Run a block of pairs, stopping early if the candidate is not ahead after --early-stop-pairs, and record it
@@ -937,6 +976,8 @@ def resume_experiment(experiment_dir, overrides=None, client=None, launcher=None
     refused = sorted(set(overrides) - set(RESUMABLE_SETTINGS))
     if refused:
         raise SystemExit(f"--resume cannot change {refused}; only {list(RESUMABLE_SETTINGS)}")
+    for key, value in SETTINGS_BEFORE_THEY_EXISTED.items():
+        config["settings"].setdefault(key, value)
     with LoopLock(folder.lock):
         changed = {key: value for key, value in overrides.items() if config["settings"].get(key) != value}
         config["settings"].update(overrides)
@@ -980,6 +1021,7 @@ def parse_arguments(argv=None):
         parser.add_argument("--parallel", type=int)
         parser.add_argument("--workers", type=int)
         parser.add_argument("--updater-max-usd", type=float)
+        parser.add_argument("--updater-max-turns", type=int)
         parser.add_argument("--max-resumes", type=int)
         options = parser.parse_args(argv)
         return None, (os.path.abspath(options.resume), {key: getattr(options, key) for key in RESUMABLE_SETTINGS})
@@ -1012,6 +1054,10 @@ def parse_arguments(argv=None):
                         choices=["low", "medium", "high", "xhigh", "max"])
     parser.add_argument("--updater-max-usd", type=float, default=defaults.updater_max_usd,
                         help="stop one updater call past this cost (USD)")
+    parser.add_argument("--updater-max-turns", type=int, default=defaults.updater_max_turns,
+                        help="stop one updater call after this many turns")
+    parser.add_argument("--no-updater-python", dest="updater_python", action="store_false",
+                        help="give the updater no run_python sandbox (as in the Oct 2026 runs)")
     parser.add_argument("--newest-runs", type=int, default=defaults.newest_runs,
                         help="how many of the current harness's newest runs the updater reads")
     parser.add_argument("--smoke", choices=["docker", "local", "off"], default=defaults.smoke)

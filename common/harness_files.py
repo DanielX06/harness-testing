@@ -33,6 +33,23 @@ def harness_fingerprint(harness_dir):
     return digest.hexdigest()[:16]
 
 
+def harness_content_fingerprint(harness_dir):
+    """Like harness_fingerprint, but blind to trailing whitespace and blank lines in each text file, so two harnesses
+    that differ only in layout get the same value. It tells a real change from a reformatted copy (the RSI loop
+    refuses or skips those); it is not provenance, which stays harness_fingerprint's job."""
+    harness_dir = os.fspath(harness_dir)
+    digest = hashlib.sha256()
+    for path in list_harness_files(harness_dir):
+        with open(os.path.join(harness_dir, path), "rb") as file:
+            data = file.read()
+        try:
+            data = "\n".join(line.rstrip() for line in data.decode("utf-8").splitlines() if line.strip()).encode()
+        except UnicodeDecodeError:
+            pass                                        # a binary file counts byte for byte
+        digest.update(path.encode() + b"\0" + data + b"\0")
+    return digest.hexdigest()[:16]
+
+
 def list_harness_files(harness_dir):
     """Relative paths (forward slashes) of every content file in the harness, sorted."""
     harness_dir = os.fspath(harness_dir)

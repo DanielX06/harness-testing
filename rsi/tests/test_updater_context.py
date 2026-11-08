@@ -62,6 +62,15 @@ check({tool["name"] for tool in context.tools} == {"write_file", "delete_file", 
       "four updater tools")
 check(next(tool for tool in context.tools if tool["name"] == "finish")["input_schema"]["properties"] == {},
       "finish takes no arguments")
+check("run_python" not in context.system_prompt and "You cannot run code here" in context.system_prompt
+      and "{{" not in context.system_prompt, "without the sandbox, the prompt neither offers run_python nor leaves a placeholder")
+sandboxed = build(scope="tools", python_tool=True)
+check([tool["name"] for tool in sandboxed.tools][-1] == "run_python" and len(sandboxed.tools) == 5
+      and "You also have run_python" in sandboxed.system_prompt and "submissions/scores.json" in sandboxed.system_prompt
+      and "Run what you build before you submit it" in sandboxed.system_prompt and "{{" not in sandboxed.system_prompt,
+      "with the sandbox, a fifth tool, run_python, and the prompt describes it and asks for tools to be run first")
+check(sandboxed.user_content == context.user_content and sandboxed.stats["python_tool"] and not context.stats["python_tool"],
+      "the sandbox changes the instructions and tools, not the evidence")
 check("tools/submission_parser.py (locked" in context.user_content[1]["text"] and "symbolic.py" not in context.system_prompt,
       "the parser is shown as tools/submission_parser.py, locked")
 
@@ -203,17 +212,13 @@ if os.path.exists(golden):
     def without_parser(text):
         start = re.search(r"^### tools/(symbolic|submission_parser)\.py.*$", text, re.M).start()
         return text[:start] + text[text.index("## The solver's tool"):]
-    instructions_end = before.index("# User message")
-    before = before[:instructions_end].replace("symbolic.py", "submission_parser.py") + before[instructions_end:]
-    # Oct 22: the report moved from finish's five parameters to write_proposal (rsi/harness_proposal.py says why)
-    with open(os.path.join(REPOSITORY_ROOT, "rsi", "updater_prompt.md")) as file:
-        output_now = file.read().split("\nOUTPUT\n", 1)[1].strip()
-    output_then = before.split("\nOUTPUT\n", 1)[1].split("\n\n", 1)[0].strip()
-    check(output_then.startswith("Call write_file") and "Then call finish with:" in output_then,
-          "the golden context still has the old OUTPUT section to swap out")
-    before = before.replace(output_then, output_now, 1)
-    check(without_parser(build().readable_markdown) == without_parser(before),
-          "the Oct 13 context is unchanged by the rewrite, apart from the parser and the report layout")
+    # The instructions have changed on purpose since (Oct 22: the report layout; Nov 5: the sandbox, detection power,
+    # no keeping the current harness), so only the user message, the evidence, is compared.
+
+    def user_message(text):
+        return text[text.index("# User message"):]
+    check(without_parser(user_message(build().readable_markdown)) == without_parser(user_message(before)),
+          "the Oct 13 user message is unchanged by the rewrite, apart from the parser")
 
 shutil.rmtree(work, ignore_errors=True)
 print(f"\nall {passed} checks passed")

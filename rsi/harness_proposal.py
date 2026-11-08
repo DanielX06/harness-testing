@@ -17,10 +17,16 @@ The updater writes its report to proposal.md with write_proposal, under five hea
 change, predicted_effect, at_risk), and then calls finish with no arguments. One long string per call is what
 it writes reliably; a finish with five string parameters let it leak one parameter's markup into another.
 Before a finish is accepted, the updater sees its own checker run on the best and the worst runs' submissions
-once (the self-test) and has to call finish again; --no-self-test skips that.
+once (the self-test) and has to call finish again; --no-self-test skips that. finish refuses a harness that is
+unchanged or differs from its parent only in whitespace and blank lines.
+
+While it works, the updater can run code with run_python in a sandbox holding the solver's data, its own edited
+tools/ and the current runs' submissions with their public scores (rsi/updater_sandbox.py), in the same mode as the
+smoke run (Docker, or --smoke local); --no-python or --smoke off leaves the tool out. A conversation that grows past
+WRAP_UP_INPUT_TOKENS gets told to finish; past STOP_INPUT_TOKENS, or if the API says it no longer fits, it ends.
 
 status is "ok" (ready for solver runs), "invalid" (failed a check; never run), "no_change", "no_finish" (it
-stopped or ran out of turns without calling finish) or "over_budget". Only "ok" candidates go on.
+stopped or ran out of turns without calling finish), "over_budget" or "context_full". Only "ok" candidates go on.
 """
 import argparse
 import ast
@@ -36,12 +42,13 @@ import uuid
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the repository root
 from common.api_pricing import price_for  # noqa: E402
-from common.harness_files import copy_harness, harness_fingerprint, list_harness_files  # noqa: E402
+from common.harness_files import copy_harness, harness_content_fingerprint, harness_fingerprint, list_harness_files  # noqa: E402
 from common.hidden_names import SIMULATOR_AND_DEVICE_NAMES  # noqa: E402
 from common.project_paths import RSI_SCORER_CONFIG, SOLVER_DATA_DIRS, SUBMISSION_PARSER_FILE, TASK_PROMPT_FILE  # noqa: E402
-from rsi.updater_context import UpdaterContextBuilder, find_run_folders, read_history  # noqa: E402
+from rsi.updater_context import UpdaterContextBuilder, find_run_folders, hidden_score_names_pattern, read_history  # noqa: E402
+from rsi.updater_sandbox import UpdaterSandbox, sandbox_unavailable  # noqa: E402
 from solver.python_sandbox import DOCKER_EXECUTABLE, TIMEOUT_EXIT_CODE, DockerPythonSandbox, LocalPythonSandbox  # noqa: E402
-from solver.solver_run import MAX_OUTPUT_TOKENS  # noqa: E402
+from solver.solver_run import CONTEXT_WINDOW_ERROR_TEXT, MAX_OUTPUT_TOKENS  # noqa: E402
 
 TOOL_FILE_PATTERN = re.compile(r"^tools/[A-Za-z_][A-Za-z0-9_]*\.py$")
 MAX_FILE_CHARS = 60000                  # one file; method.md is 1.5k today, the largest tool 4.8k
@@ -56,6 +63,13 @@ PROPOSAL_HEADING = re.compile(r"^\s*#{1,6}\s*([A-Za-z][A-Za-z _]*?)\s*:?\s*$")
 FITTED_LOOKING_DECIMAL = re.compile(r"(?<![\w.])\d+\.\d+(?:[eE][-+]?\d+)?(?![\w.])")
 # in method.md (as before): any decimal, or an integer of two digits or more
 METHOD_NUMBER = re.compile(r"(?<![\w.])\d+\.\d+|(?<![\w.])\d{2,}(?![\w.])")
+# The updater's conversation grows with every run_python output and every file it writes. Past the first line it is
+# told to wrap up; past the second it is stopped, which leaves room for MAX_OUTPUT_TOKENS of answer inside a
+# 200k-token context window.
+WRAP_UP_INPUT_TOKENS = 120_000
+STOP_INPUT_TOKENS = 160_000
+WRAP_UP_MESSAGE = ("Your conversation is near its length limit. Make your last edits, write your report with "
+                   "write_proposal and call finish within the next few turns.")
 
 
 # ---- the candidate folder ---------------------------------------------------------------------------------
@@ -428,8 +442,9 @@ class HarnessUpdaterSession:
     """The conversation with the updater: requests, its edits to the workspace, the self-test, and its finish."""
 
     def __init__(self, context, workspace, client, model, effort, max_turns, max_usd, run_paths, scratch_parent,
-                 smoke="docker", smoke_python=None, self_test=True):
-        self.context, self.workspace, self.client = context, workspace, client
+                 smoke="docker", smoke_python=None, self_test=True, sandbox=None):
+        self.context, self.workspace, self.client, self.sandbox = context, workspace, client, sandbox
+        self.parent_content = harness_content_fingerprint(workspace.parent_dir)
         self.model, self.effort, self.max_turns, self.max_usd = model, effort, max_turns, max_usd
         self.run_paths, self.scratch_parent = run_paths, scratch_parent
         self.smoke, self.smoke_python, self.self_test = smoke, smoke_python, self_test
@@ -439,13 +454,19 @@ class HarnessUpdaterSession:
         self.usage = {key: 0 for key in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")}
         self.usage_per_turn = []                # the first turn's input is the exact size of the context
         self.self_test_done, self.self_test_log = False, []
-        self.nudged = False
+        self.nudged = self.wrap_up_sent = False
 
     def run(self):
         """Talk until the updater's finish is accepted, it gives up, or turns or budget run out. Sets status to
         None (submitted), "no_finish" or "over_budget"."""
         while self.turns < self.max_turns:
-            response = self._request()
+            try:
+                response = self._request()
+            except Exception as error:                  # noqa: BLE001 (only the context-window refusal is ours)
+                if CONTEXT_WINDOW_ERROR_TEXT.search(str(error)):
+                    self.status = "context_full"
+                    return
+                raise
             self.messages.append({"role": "assistant", "content": response.content})
             tool_uses = [block for block in response.content if block.type == "tool_use"]
             if not tool_uses:
@@ -460,6 +481,11 @@ class HarnessUpdaterSession:
                 if block.name == "finish":
                     finish = block
                     continue
+                if block.name == "run_python" and self.sandbox is not None:
+                    code = (block.input if isinstance(block.input, dict) else {}).get("code", "")
+                    results.append({"type": "tool_result", "tool_use_id": block.id,
+                                    "content": self.sandbox.run_python(str(code))})
+                    continue
                 message, is_error = self.workspace.apply_tool_call(block.name, block.input if isinstance(block.input, dict) else {})
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": message,
                                 **({"is_error": True} if is_error else {})})
@@ -469,11 +495,24 @@ class HarnessUpdaterSession:
                 if submitted:
                     self.messages.append({"role": "user", "content": results})
                     return
+            context_tokens = self.last_input_tokens()
+            if context_tokens > STOP_INPUT_TOKENS:
+                self.messages.append({"role": "user", "content": results})
+                self.status = "context_full"
+                return
+            if context_tokens > WRAP_UP_INPUT_TOKENS and not self.wrap_up_sent:
+                self.wrap_up_sent = True
+                results.append({"type": "text", "text": WRAP_UP_MESSAGE})
             self.messages.append({"role": "user", "content": results})
             if self.spent_usd > self.max_usd:
                 self.status = "over_budget"
                 return
         self.status = "no_finish"
+
+    def last_input_tokens(self):
+        """The last request's whole input, cached or not: the conversation's size so far."""
+        last = self.usage_per_turn[-1] if self.usage_per_turn else {}
+        return sum(last.get(key, 0) for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
 
     def _request(self):
         with self.client.messages.stream(model=self.model, max_tokens=MAX_OUTPUT_TOKENS, system=self.context.system_prompt,
@@ -506,6 +545,10 @@ class HarnessUpdaterSession:
         if not self.workspace.changes():
             return {"type": "tool_result", "tool_use_id": finish.id, "is_error": True,
                     "content": "refused: the harness is unchanged; write at least one file first"}, False
+        if harness_content_fingerprint(self.workspace.folder) == self.parent_content:
+            return {"type": "tool_result", "tool_use_id": finish.id, "is_error": True,
+                    "content": "refused: the harness differs from the current one only in whitespace or blank lines; "
+                               "make a change that the solver would notice"}, False
         report = self.workspace.proposal_text()
         refusal = proposal_refusal(report)
         if refusal:
@@ -522,17 +565,20 @@ class HarnessUpdaterSession:
 
 
 def propose_candidate(run_paths, harness_dir, out_dir, scope="tools", history=None, model="claude-haiku-5-5",
-                      effort="low", max_turns=20, max_usd=2.0, smoke="docker", smoke_python=None, client=None,
-                      newest_runs=20, token_budget=80000, self_test=True, scorer_config=RSI_SCORER_CONFIG):
+                      effort="low", max_turns=40, max_usd=2.0, smoke="docker", smoke_python=None, client=None,
+                      newest_runs=20, token_budget=80000, self_test=True, scorer_config=RSI_SCORER_CONFIG,
+                      python_tool=True):
     """One proposal from the runs in run_paths of the harness in harness_dir, written to out_dir.
-    scorer_config names the grids whose names the updater must never see. Returns the proposal dict (also saved
-    as proposal.json)."""
+    scorer_config names the grids whose names the updater must never see. python_tool: give the updater run_python
+    (in the smoke mode's sandbox; none with --smoke off). Returns the proposal dict (also saved as proposal.json)."""
     price_for(model)                                # an unknown model fails here, before anything is written
     if os.path.exists(out_dir):
         raise FileExistsError(f"{out_dir} already exists")
     harness_dir = os.path.abspath(harness_dir)
+    no_sandbox = sandbox_unavailable(smoke) if python_tool else "run_python not offered (--no-python)"
     context = UpdaterContextBuilder(run_paths, harness_dir, scope=scope, history=history, newest_runs=newest_runs,
-                                    token_budget=token_budget, scorer_config=scorer_config).build()
+                                    token_budget=token_budget, scorer_config=scorer_config,
+                                    python_tool=no_sandbox is None).build()
     os.makedirs(out_dir)
     with open(os.path.join(out_dir, "context.md"), "w") as file:
         file.write(context.readable_markdown + "\n")
@@ -542,12 +588,19 @@ def propose_candidate(run_paths, harness_dir, out_dir, scope="tools", history=No
     if client is None:
         import anthropic
         client = anthropic.Anthropic(max_retries=6)     # rides out short overloads in an unattended loop
+    sandbox = None
+    if no_sandbox is None:
+        sandbox = UpdaterSandbox.create(out_dir, os.path.join(workspace.folder, "tools"), context.stats["noise"],
+                                        context.stats["runs_in_table"], run_paths,
+                                        hidden_score_names_pattern(scorer_config), smoke, smoke_python)
     session = HarnessUpdaterSession(context, workspace, client, model, effort, max_turns, max_usd, run_paths, out_dir,
-                                    smoke, smoke_python, self_test)
+                                    smoke, smoke_python, self_test, sandbox)
     started = time.monotonic()
     try:
         session.run()
     finally:
+        if sandbox is not None:
+            sandbox.remove()
         with open(os.path.join(out_dir, "transcript.json"), "w") as file:
             json.dump({"model": model, "effort": effort, "spent_usd": round(session.spent_usd, 4),
                        "messages": [{"role": message["role"], "content": [plain_block(block) for block in message["content"]]}
@@ -576,6 +629,8 @@ def propose_candidate(run_paths, harness_dir, out_dir, scope="tools", history=No
                           for path, (old, new) in changes.items()],
         "errors": errors, "warnings": warnings, "refused": workspace.refused, "smoke": smoke_log,
         "self_test": session.self_test_log,
+        "python": ({"calls": sandbox.calls, "timeouts": sandbox.timeouts} if sandbox is not None
+                   else {"offered": False, "why": no_sandbox}),
         "updater": {"model": model, "effort": effort, "turns": session.turns, "seconds": round(time.monotonic() - started, 1),
                     "spent_usd": round(session.spent_usd, 4), "usage": session.usage, "usage_per_turn": session.usage_per_turn,
                     "context_tokens": (sum(first_turn[key] for key in ("input_tokens", "cache_read_input_tokens",
@@ -597,20 +652,22 @@ def main():
     parser.add_argument("--history", default=None, help="history.jsonl from the loop")
     parser.add_argument("--model", default="claude-haiku-5-5")
     parser.add_argument("--effort", default="low", choices=["low", "medium", "high", "xhigh", "max"])
-    parser.add_argument("--max-turns", type=int, default=20)
+    parser.add_argument("--max-turns", type=int, default=40)
     parser.add_argument("--max-usd", type=float, default=2.0, help="stop the updater past this cost (USD)")
     parser.add_argument("--smoke", choices=["docker", "local", "off"], default="docker",
                         help="run the candidate's checker in the solver's Docker image (default), with --smoke-python, or not")
     parser.add_argument("--no-self-test", action="store_true",
                         help="skip showing the updater its checker on the best and worst submissions before it submits")
     parser.add_argument("--smoke-python", default=None, help="interpreter for --smoke local (needs numpy, pandas, scipy, sympy)")
+    parser.add_argument("--no-python", action="store_true", help="give the updater no run_python sandbox")
     options = parser.parse_args()
     proposal = propose_candidate(options.runs, options.harness, options.out, options.scope, read_history(options.history),
                                  options.model, options.effort, options.max_turns, options.max_usd, options.smoke,
-                                 options.smoke_python, self_test=not options.no_self_test)
+                                 options.smoke_python, self_test=not options.no_self_test,
+                                 python_tool=not options.no_python)
     updater = proposal["updater"]
     print(f"\n{proposal['candidate']}: {proposal['status']}  ({updater['turns']} turns, ${updater['spent_usd']:.4f}, "
-          f"{updater['seconds']} s)")
+          f"{updater['seconds']} s, {proposal['python'].get('calls', 0)} run_python calls)")
     for changed in proposal["files_changed"]:
         print(f"  {changed['kind']:8s} {changed['path']}")
     if proposal["manifest"]:

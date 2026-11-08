@@ -15,7 +15,9 @@ The scorer puts the solver's model into a simulated grid the solver never sees, 
 When this loop ends, the final harness is tested on a different inverter-based unit, on grids it has never seen. A change that only works for this device or this grid will cost score there.
 
 HOW YOUR CHANGE IS JUDGED
-Your harness and the current one each get many fresh solver runs, interleaved. Yours replaces the current one only if it lowers the mean score by more than run-to-run variation explains. Otherwise it is discarded. One run proves little, since the current harness's runs score anywhere from 0.37 to 1.52. Look for patterns that recur across runs.
+Your harness and the current one each get many fresh solver runs, interleaved. Yours replaces the current one only if it lowers the mean score by more than run-to-run variation explains, in two separate blocks of runs. Otherwise it is discarded. One run proves little, since the current harness's runs score anywhere from 0.37 to 1.52. Look for patterns that recur across runs.
+
+This test only sees large effects. A change that lowers the mean score by a tenth is kept less than one time in ten, by a fifth about one time in three, and by a third about four times in five. Rewording or tightening method.md has rarely moved the score that far. What can is a change in what the solver is able to do: a tool that does part of the job for it reliably, or a check that tells it correctly whether a model is right.
 
 WHAT YOU GET
 The message after these instructions has three parts:
@@ -23,11 +25,16 @@ The message after these instructions has three parts:
 2. How the current harness did: a table of its recent runs (composite, TD per held-out disturbance and channel, failures, steps, tool calls, tool timeouts, API cost, and whether the budget stopped the run), each run's final message with its equations and submission, and the full transcripts of the best and the worst run in the table, with long tool outputs cut.
 3. Earlier attempts: what each changed and why, its predicted effect, its measured effect with uncertainty, and whether it was kept.
 
+You also have run_python, a sandbox to build and test your change in. It holds what the solver's working directory holds (train/, val/, runs.json, dataset.json, and tools/ with your write_file and delete_file edits applied before every call) plus submissions/: the submission.json of each run in the part 2 table, as <run id>.json, and submissions/scores.json with the composite, TD and failures part 2 shows for each. Each call is a fresh Python process with numpy, pandas, scipy and sympy, no network, a 120 s limit, and output cut to its last 8000 characters. Files your code writes stay for your later calls, except in tools/, which is rebuilt from your edits before each call. Only write_file and delete_file change the harness.
+
 HOW TO WORK
 1. Find the failure patterns. Group the runs by what went wrong. For each group, find where it starts in the transcripts: what the solver did, what it saw, and what it decided next. Separate causes the harness can address, such as a misleading instruction, a check the solver never runs, or a missing or broken tool, from ordinary variation between runs.
-2. Pick the pattern that costs the most score across runs and that a harness change can plausibly fix.
-3. Make one change aimed at it. It may touch several files if every part serves the same fix. Keep what the good runs did right.
-4. Check the earlier attempts. Do not resubmit a rejected change unless you explain why its result does not apply now.
+2. Pick the pattern that costs the most score across runs and that a harness change can plausibly fix. If the last three attempts went after the same pattern and none was kept, pick a different pattern, or a different kind of fix than those three tried.
+3. Make one change aimed at it. It can be large, such as a new tool and the method.md steps that use it, as long as every part serves the same fix. Do not take away what the good runs relied on.
+4. Run what you build before you submit it; a tool you have not run is a guess. Use run_python to run it the way the solver would, on the full recordings and on the submissions in submissions/. Check that it finishes well inside 120 s, that its output is right, and that what it tells the solver separates the better-scoring submissions from the worse ones.
+5. Check the earlier attempts. Do not resubmit a rejected change unless you explain why its result does not apply now.
+
+You must submit a change: keeping the current harness is not an option here. finish refuses a harness that differs from the current one only in whitespace or blank lines, and a harness identical to an earlier attempt is never run and counts as a failed attempt. A token edit made only to get past finish still costs a block of solver runs and teaches nothing. If the evidence leaves you unsure, submit the change you think most likely to help and say why in at_risk.
 
 RULES
 - Everything you write must hold for any inverter-based unit. Do not put this device's structure, gains, time constants, droop values, or any number fitted from these recordings into method.md or tools/.
@@ -37,12 +44,18 @@ RULES
 - tools/check_submission.py may be extended, but it must keep parsing submissions with tools/submission_parser.py.
 
 OUTPUT
-Call write_file once for each file you change or add, with its complete new content, and delete_file for any file you remove. Then call finish with:
-- evidence: the run ids and what happened in them
-- root_cause: what in the harness causes it
-- change: what you changed, in one or two sentences
-- predicted_effect: which numbers should move, and roughly how far
-- at_risk: what could get worse
+Call write_file for each file you change or add, with its complete new content (writing a path again replaces it), and delete_file for any file you remove. Then call write_proposal once with your report, as markdown under these five headings, each with plain text under it:
+## evidence
+the run ids and what happened in them
+## root_cause
+what in the harness causes it
+## change
+what you changed, in one or two sentences
+## predicted_effect
+which numbers should move, and roughly how far
+## at_risk
+what could get worse
+Then call finish, with no arguments.
 
 
 # User message
@@ -424,6 +437,8 @@ def parse_expression(text, visible_symbols, where):
     """One expression string -> sympy, using only the symbols in visible_symbols (name -> sympy Symbol)."""
     if not isinstance(text, str) or len(text) > MAX_EXPRESSION_CHARS:
         raise SubmissionError(f"{where}: expression must be a string under {MAX_EXPRESSION_CHARS} chars")
+    if "\x00" in text:                 # Python 3.12 and later call this a SyntaxError, earlier versions a ValueError
+        raise SubmissionError(f"{where}: expression contains a null byte")
     try:
         tree = ast.parse(text.strip(), mode="eval")
     except SyntaxError as error:

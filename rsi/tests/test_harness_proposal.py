@@ -17,7 +17,7 @@ REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspat
 sys.path.insert(0, REPOSITORY_ROOT)
 from common.harness_files import harness_fingerprint, list_harness_files  # noqa: E402
 from common.project_paths import STARTING_HARNESS_DIR  # noqa: E402
-from rsi.harness_proposal import parse_proposal, proposal_refusal, propose_candidate  # noqa: E402
+from rsi.harness_proposal import WRAP_UP_MESSAGE, parse_proposal, proposal_refusal, propose_candidate  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--smoke-python", default=sys.executable)
@@ -59,7 +59,10 @@ class FakeClient:
 
     def stream(self, **request):
         self.requests.append({**request, "messages": list(request["messages"])})
-        return _Stream(self.script.pop(0))
+        response = self.script.pop(0)
+        if isinstance(response, Exception):         # the API refusing the request
+            raise response
+        return _Stream(response)
 
 
 class _Stream:
@@ -285,6 +288,66 @@ check(proposal["manifest"]["change"] == "Edited after the self-test." and "no ar
       "the second finish takes no arguments and submits the report as it stands then")
 check(len(proposal["self_test"]) == 2 and all(entry["exit"] == 0 for entry in proposal["self_test"]), "the self-test log is saved")
 
+# 8b. run_python: the updater's sandbox holds the data, its own edited tools/ and the runs' submissions and scores
+LIST_CODE = ("import os, json, subprocess, sys\n"
+             "print(sorted(os.listdir('.')))\n"
+             "print(sorted(os.listdir('tools')))\n"
+             "scores = json.load(open('submissions/scores.json'))\n"
+             "print('runs', len(scores), 'files', len([n for n in os.listdir('submissions') if n != 'scores.json']))\n"
+             "print('keys', sorted(next(iter(scores.values()))))\n"
+             "print(subprocess.run([sys.executable, 'tools/closed_loop_check.py', 'x.json'], capture_output=True, text=True).stdout)\n")
+proposal, client, out = propose("python", [
+    reply(use("write_file", path="tools/closed_loop_check.py", content=NEW_TOOL), use("run_python", code=LIST_CODE)),
+    reply(use("run_python", code="open('tools/scratch.py', 'w').write('x = 1')\nopen('notes.txt', 'w').write('kept')")),
+    reply(use("run_python", code="import os\nprint(os.path.exists('tools/scratch.py'), open('notes.txt').read())\n"
+                                 "raise SystemExit(3)")),
+    reply(use("write_file", path="method.md", content=METHOD), *finish())])
+listing = client.requests[1]["messages"][-1]["content"][1]["content"]
+check("run_python" in {tool["name"] for tool in client.requests[0]["tools"]} and "You also have run_python" in client.requests[0]["system"],
+      "with a sandbox the updater gets run_python, and its instructions describe it")
+check(all(f"'{name}'" in listing for name in ("train", "val", "runs.json", "dataset.json", "submissions", "tools"))
+      and "'closed_loop_check.py'" in listing and "'submission_parser.py'" in listing,
+      "the sandbox holds the solver's data, and tools/ already has the tool written a moment before")
+check("runs 10 files 10" in listing and "keys ['composite', 'failures', 'submission_file', 'td', 'td_by_disturbance']" in listing,
+      "submissions/ holds the ten runs' submissions, and scores.json only what part 2 shows (no FR or PAR)")
+check("checked x.json 1" in listing, "a tool runs in the sandbox as the solver would run it")
+third = client.requests[3]["messages"][-1]["content"][0]["content"]
+check(third.startswith("False kept") and third.rstrip().endswith("(exit code 3)"),
+      "code written into tools/ is gone at the next call, other files stay, and a non-zero exit is reported")
+check(proposal["status"] == "ok" and proposal["python"] == {"calls": 3, "timeouts": 0}, "proposal.json counts the calls")
+check(not [name for name in os.listdir(out) if name.startswith(".updater_sandbox_")], "the sandbox is removed afterwards")
+proposal, client, _ = propose("no_python", [reply(use("write_file", path="method.md", content=METHOD), *finish())],
+                              python_tool=False)
+check("run_python" not in {tool["name"] for tool in client.requests[0]["tools"]} and proposal["python"]["offered"] is False
+      and "You cannot run code here" in client.requests[0]["system"], "python_tool=False leaves the tool and its text out")
+
+# 8c. finish refuses a whitespace-only change; a conversation that grows too long is told to finish, then stopped
+with open(os.path.join(HARNESS, "method.md")) as file:
+    PARENT_METHOD = file.read()
+proposal, client, _ = propose("whitespace_only", [
+    reply(use("write_file", path="method.md", content=PARENT_METHOD.replace("\n", "  \n") + "\n\n"), *finish()),
+    reply(use("write_file", path="method.md", content=METHOD), *finish())], smoke="off")
+refusal = client.requests[1]["messages"][-1]["content"][-1]["content"]
+check(proposal["status"] == "ok" and "only in whitespace or blank lines" in refusal,
+      "a change of whitespace and blank lines only is refused at finish, then a real one is accepted")
+
+
+def reply_with_input(tokens, *blocks):
+    return NS(content=list(blocks), stop_reason="tool_use",
+              usage=NS(input_tokens=tokens, output_tokens=1000, cache_read_input_tokens=0, cache_creation_input_tokens=0))
+
+
+proposal, client, _ = propose("wrap_up", [reply_with_input(130000, use("write_file", path="method.md", content=METHOD)),
+                                          reply(*finish())], smoke="off")
+check(proposal["status"] == "ok" and client.requests[1]["messages"][-1]["content"][-1] == {"type": "text", "text": WRAP_UP_MESSAGE},
+      "past 120k input tokens the updater is told to wrap up")
+proposal, _, _ = propose("context_full", [reply_with_input(170000, use("write_file", path="method.md", content=METHOD))],
+                         smoke="off")
+check(proposal["status"] == "context_full" and proposal["manifest"] is None, "past 160k input tokens the conversation ends")
+proposal, _, _ = propose("api_context", [reply(use("write_file", path="method.md", content=METHOD)),
+                                         RuntimeError("prompt is too long: 212000 tokens > 200000 maximum")], smoke="off")
+check(proposal["status"] == "context_full", "the API's context-window refusal ends it the same way")
+
 # 8. an existing folder is never overwritten
 try:
     propose("good", [])
@@ -293,8 +356,8 @@ except FileExistsError:
     refused = True
 check(refused, "an existing candidate folder is refused")
 check(not [name for name in os.listdir(work) for inner in [os.path.join(work, name)] if os.path.isdir(inner)
-           and any(entry.startswith(".checker_") for entry in os.listdir(inner))],
-      "no scratch folder is left behind by the checker runs")
+           and any(entry.startswith((".checker_", ".updater_sandbox_")) for entry in os.listdir(inner))],
+      "no scratch folder is left behind by the checker runs or the updater's sandboxes")
 
 shutil.rmtree(work, ignore_errors=True)
 print(f"\nall {passed} checks passed")
