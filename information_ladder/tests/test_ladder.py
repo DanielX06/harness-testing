@@ -22,7 +22,7 @@ from pathlib import Path
 LADDER_DIR = Path(__file__).resolve().parent.parent
 REPOSITORY_ROOT = LADDER_DIR.parent
 sys.path[:0] = [str(REPOSITORY_ROOT), str(LADDER_DIR), str(LADDER_DIR / "harness_tools"),
-                str(REPOSITORY_ROOT / "harness_v0" / "harness" / "tools")]
+                str(REPOSITORY_ROOT / "harnesses" / "v0" / "harness" / "tools")]
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 

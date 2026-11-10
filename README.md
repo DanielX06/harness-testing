@@ -27,9 +27,9 @@ Solver runs and batches (`solver/README.md` has the rest). A batch takes the mod
 $PY solver/solver_run.py haiku low --noise clean                                     # one run, scored on grid B
 bash solver/run_solver_batch.sh haiku low 10 2 clean                                 # 10 runs, 2 at a time, then summary.md
 CONFIG=scorer/config_rsi.json bash solver/run_solver_batch.sh opus high 10 2 clean   # a baseline the RSI loop can be compared with (also scores grid M)
-HARNESS=rsi/experiments/<name>/candidates/hNNN/harness CONFIG=scorer/config_rsi.json bash solver/run_solver_batch.sh haiku low 20 2 clean   # a candidate harness
-$PY solver/solver_run.py --resume runs/<batch>/<run>                                 # carry on a run that crashed or was stopped
-$PY scorer/rescore_runs.py runs/<batch>/2*/ --reason "why" && $PY solver/summarize_batch.py runs/<batch>   # score finished runs again after a scorer fix
+HARNESS=rsi_loops/<loop>/candidates/hNNN/harness CONFIG=scorer/config_rsi.json bash solver/run_solver_batch.sh haiku low 20 2 clean   # a candidate harness
+$PY solver/solver_run.py --resume results/<study>/<batch>/<run>                      # carry on a run that crashed or was stopped
+$PY scorer/rescore_runs.py results/<study>/<batch>/2*/ --reason "why" && $PY solver/summarize_batch.py results/<study>/<batch>   # score finished runs again after a scorer fix
 ```
 
 Keep the number running at once the same across batches you compare, since machine load changes how often tool calls hit the 120 s limit. Cost scales with the model: Haiku at low effort averaged about $0.017 a run in the Oct 13 batch, and the one Opus run at high effort (Oct 20) cost $4.37.
@@ -38,23 +38,29 @@ The RSI loop (`rsi/README.md` has the rest, including running it unattended):
 
 ```bash
 $PY rsi/rsi_experiment.py --iters 2 --baseline-runs 4 --pairs 4 --early-stop-pairs 2 --confirm-pairs 4   # smoke test
-$PY rsi/rsi_experiment.py --iters 40 --parallel 4 --out rsi/experiments/<name>                            # a real experiment
-$PY rsi/rsi_experiment.py --resume rsi/experiments/<name>                                                 # carry on where it stopped
-$PY rsi/experiment_archive.py rsi/experiments/<name>                                                      # pack an experiment that was stopped by hand
+$PY rsi/rsi_experiment.py --iters 40 --parallel 4 --out rsi_loops/<date>_<name>                           # a real experiment
+$PY rsi/rsi_experiment.py --resume rsi_loops/<loop>                                                       # carry on where it stopped
+$PY rsi/experiment_archive.py rsi_loops/<loop>                                                            # pack an experiment that was stopped by hand
 ```
 
 ## Folders
 
+Code, data you build, and what runs produce are kept apart. Every folder below has a README.
+
 | folder | what is in it |
 |---|---|
-| `solver/` | one agent run, batches of runs, the sandbox and the locked task prompt (`solver/README.md`) |
-| `harness_v0/` | the starting harness (`system.md`, `method.md`, `tools/`), and the runs made before Oct 22 (`harness_v0/README.md`) |
-| `scorer/` | the closed-loop scorer and the submission parser (`scorer/README.md`) |
-| `test_cases/` | grid A (training), grid B (selection) and grid M (hidden monitor): their specs, recordings and builders (`test_cases/README.md`) |
-| `rsi/` | the RSI loop: the updater's context, one proposal, and the experiment that runs and judges them (`rsi/README.md`) |
+| `harnesses/` | every harness a person made: `v0/` (the starting harness) and `information_ladder/` (rungs r1 to r6); `harnesses/README.md` lists them |
+| `results/` | everything a solver batch produced, one folder per study (`v0_baselines/`, `information_ladder/`, `rsi_smoke_tests/`, `scorer_reference/`); new batches land in `results/unfiled/`; `results/README.md` is the index |
+| `rsi_loops/` | the RSI loop experiments, one folder per loop with a README; its own git repository (`harness-experiments`), ignored by this one |
+| `analyses/` | one-off studies on saved runs (the Q-V gain test, scoring old runs on grid M) |
+| `solver/` | one agent run, batches of runs, the sandbox and the locked task prompt |
+| `scorer/` | the closed-loop scorer and the submission parser |
+| `test_cases/` | grid A (training), grid B (selection) and grid M (hidden monitor): their specs, recordings and builders |
+| `rsi/` | the RSI loop's code: the updater's context, its sandbox, one proposal, and the experiment that runs and judges them |
+| `information_ladder/` | the ladder's code: the rung builder, its tools' sources and its run scripts (the rungs themselves are in `harnesses/information_ladder/`) |
 | `common/` | small modules the others share: project paths, API prices, the harness fingerprint, the names the solver must never see, and run provenance |
-| `experiments/` | one-off analyses (the Q-V gain test, scoring old runs on grid M) |
-| `runs/` | solver runs and batches made from Oct 22 on |
+
+Folders under `results/` and `rsi_loops/` are named `<date>_<model>-<effort>_<noise>` or `<date>_<run name>_<updater>_from-<start>`. They were renamed on Nov 9 (the project doc "Folder map after the Nov 9 reorganization" maps old paths to new); paths written inside older run files (`meta.json`, `batch.json`, `config.json`) still show where they were made. On a machine that still has the old layout, `git pull` and then `bash move_after_reorg.sh` (a dry run; add `--go` to move) puts aside the ignored files git leaves in the old folders and moves the loop repository to `rsi_loops/`.
 
 ## Paths and provenance
 

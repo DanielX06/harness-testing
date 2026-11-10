@@ -3,7 +3,7 @@ scores the model it submits, closed loop, on held-out grids.
 
     python solver/solver_run.py haiku low                       # or 1 1, as before
     python solver/solver_run.py haiku low --harness DIR --noise clean --config scorer/config_rsi.json --workers 2
-    python solver/solver_run.py --resume runs/<batch>/<run>     # carry on a run that crashed or was stopped
+    python solver/solver_run.py --resume results/<study>/<batch>/<run>     # carry on a run that crashed or was stopped
 
 What the agent gets (assembled here, never edited by the agent):
   solver/task_prompt.md        the task, the data, how it is scored, the submission format (locked in every RSI

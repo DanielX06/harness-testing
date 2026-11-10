@@ -1,6 +1,6 @@
 # The 22 v0 calibration runs scored on grid M (Oct 17)
 
-Every submission from the three v0 batches (Haiku 5.5 at low effort: `batch_20261011_182645_m1e1` noisy, `batch_20261013_095747_m1e1_clean` and `batch_20261017_153512_m1e1_clean`) scored on grid M alone, closed loop, with `config_min.json`'s settings. No agent was re-run: a submission is pure data, so this is exactly what `config_rsi.json` would have recorded at run time. Grid B and grid A held-out scores come from each run's own `score/` files. Per-run components are in `runs_on_M.json`; `python score_runs_on_M.py` regenerates them (it skips runs already in the file).
+Every submission from the three v0 batches (Haiku 5.5 at low effort: `results/v0_baselines/2026-10-11_haiku-low_noisy_10runs`, `2026-10-13_haiku-low_clean_10runs` and `2026-10-17_haiku-low_clean_2runs`) scored on grid M alone, closed loop, with `config_min.json`'s settings. No agent was re-run: a submission is pure data, so this is exactly what `config_rsi.json` would have recorded at run time. Grid B and grid A held-out scores come from each run's own `score/` files. Per-run components are in `runs_on_M.json`; `python score_runs_on_M.py` regenerates them (it skips runs already in the file).
 
 | run | batch | grid B (selection) | grid M (monitor) | grid A held-out | B runs that failed | M runs that failed |
 |---|---|---|---|---|---|---|

@@ -11,11 +11,16 @@ SOLVER_DIR = REPOSITORY_ROOT / "solver"
 RSI_DIR = REPOSITORY_ROOT / "rsi"
 TEST_CASES_DIR = REPOSITORY_ROOT / "test_cases"
 
-# the harness the RSI loop starts from (system.md, method.md, tools/)
-STARTING_HARNESS_DIR = REPOSITORY_ROOT / "harness_v0" / "harness"
-# where solver runs and batches go unless --out says otherwise
-DEFAULT_RUNS_DIR = REPOSITORY_ROOT / "runs"
-DEFAULT_EXPERIMENTS_DIR = RSI_DIR / "experiments"
+# every harness a person made (harnesses/<name>/harness/), with a README beside each
+HARNESSES_DIR = REPOSITORY_ROOT / "harnesses"
+# the starting harness: solver runs and the RSI loop use it unless told otherwise
+STARTING_HARNESS_DIR = HARNESSES_DIR / "v0" / "harness"
+# results of every study, one folder per study (results/README.md is the index)
+RESULTS_DIR = REPOSITORY_ROOT / "results"
+# where a new solver run or batch goes unless --out says otherwise; file it into a study folder afterwards
+DEFAULT_RUNS_DIR = RESULTS_DIR / "unfiled"
+# RSI loop experiments: their own git repository (harness-experiments), ignored by this one
+DEFAULT_EXPERIMENTS_DIR = REPOSITORY_ROOT / "rsi_loops"
 
 TASK_PROMPT_FILE = SOLVER_DIR / "task_prompt.md"
 SOLVER_RUN_SCRIPT = SOLVER_DIR / "solver_run.py"

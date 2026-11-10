@@ -5,7 +5,7 @@ twice, on two separate blocks of pairs.
     python rsi/rsi_experiment.py --iters 30                                   # Haiku at low effort everywhere
     python rsi/rsi_experiment.py --iters 2 --baseline-runs 4 --pairs 4 --early-stop-pairs 2 --confirm-pairs 4
                                                                                # a smoke test: 12 to 36 runs
-    python rsi/rsi_experiment.py --resume rsi/experiments/20261022_090000     # carry on after a crash or a stop
+    python rsi/rsi_experiment.py --resume rsi_loops/2026-11-10_090000     # carry on after a crash or a stop
 
 On a Mac, start it as `caffeinate -i python rsi/rsi_experiment.py ...` so the machine does not sleep mid-loop.
 
@@ -50,7 +50,7 @@ folder.
 Spend is always recomputed from the files: every solver run's meta.json (crashed and replaced runs included) and
 every proposal's updater cost (interrupted proposals included).
 
-Everything goes in --out (default rsi/experiments/<date>_<time>):
+Everything goes in --out (default rsi_loops/<date>_<time>; give a loop a readable name with --out):
     candidates/h000/harness     the starting harness; candidates/hNNN/ each proposal (harness_proposal.py's output)
     runs/<block>/<run tag>/     solver runs. Blocks are h000_baseline, hNNN_test and hNNN_confirm; each run's
                                 meta.json labels give its block, pair, arm (candidate or current) and harness
@@ -1067,10 +1067,10 @@ def parse_arguments(argv=None):
                         help="resume a failed run until it has failed more often than this, then replace it")
     parser.add_argument("--max-failures-in-a-row", type=int, default=defaults.max_failures_in_a_row,
                         help="stop the loop after this many failed solver sessions with no run finishing in between")
-    parser.add_argument("--out", default=None, help="experiment folder (default rsi/experiments/<date>_<time>)")
+    parser.add_argument("--out", default=None, help="experiment folder (default rsi_loops/<date>_<time>)")
     options = parser.parse_args(argv)
     values = vars(options)
-    values["out"] = os.path.abspath(values["out"] or os.path.join(DEFAULT_EXPERIMENTS_DIR, time.strftime("%Y%m%d_%H%M%S")))
+    values["out"] = os.path.abspath(values["out"] or os.path.join(DEFAULT_EXPERIMENTS_DIR, time.strftime("%Y-%m-%d_%H%M%S")))
     values["solver_model"] = resolve_model_id(values["solver_model"])
     values["solver_effort"] = resolve_effort(values["solver_effort"])
     for key in ("start", "scorer_config"):

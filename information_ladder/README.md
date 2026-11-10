@@ -26,11 +26,11 @@ $PY information_ladder/build_ladder.py               # harness folders (committe
 $PY information_ladder/tests/test_ladder.py          # 35 checks, about a minute; no API, Docker or ANDES
 bash information_ladder/run_ladder.sh haiku low 10 2                         # every rung, 10 runs each
 bash information_ladder/run_ladder.sh sonnet low 10 2 r0_v0 r1_grid_equivalent   # the Sonnet-low baseline
-$PY information_ladder/summarize_ladder.py runs/ladder_<haiku> runs/ladder_<sonnet>   # both in one table
+$PY information_ladder/summarize_ladder.py results/information_ladder/<haiku ladder> results/information_ladder/<sonnet ladder>   # both in one table
 $PY information_ladder/run_rung.py r4_menu_with_true haiku low --config scorer/config_rsi.json   # one run
 ```
 
-Results go to `runs/ladder_<time>_<model>_<effort>/<rung>/`, one batch folder per rung (summary.md as usual), with `ladder_summary.md` on top. Scoring uses `scorer/config_rsi.json` by default, so grid M is scored too, as for the RSI baselines. Every rung uses the noise-free data, since r2 and r3 only exist noise-free. Runs carry the label `rung=<name>` in meta.json, and `solver/solver_run.py --resume` works on them as on any run.
+Results go to `results/information_ladder/<date>_<time>_<model>-<effort>/<rung>/`, one batch folder per rung (summary.md as usual), with `ladder_summary.md` on top. Scoring uses `scorer/config_rsi.json` by default, so grid M is scored too, as for the RSI baselines. Every rung uses the noise-free data, since r2 and r3 only exist noise-free. Runs carry the label `rung=<name>` in meta.json, and `solver/solver_run.py --resume` works on them as on any run.
 
 Cost, roughly: Haiku-low runs have cost $0.02 to $0.04, so 70 runs should be a few dollars. The menu rungs will likely take more steps, since each fit call is a step. I don't know Sonnet-low's cost per run on this task. Scoring is about 4 minutes per run with config_rsi.json, so the Haiku ladder at parallel 2 is roughly 2 to 3 hours.
 
@@ -56,7 +56,7 @@ Cost, roughly: Haiku-low runs have cost $0.02 to $0.04, so 70 runs should be a f
 | `harness_tools/structure_menu.py` | the block menu; `list`, and `build` to a submission; reads `tools/menu_options.json` for the rung's allowed blocks |
 | `harness_tools/fit_structure.py` | least-squares fit of a menu structure by grid-equivalent replay on short windows, resumable |
 | `internal_signals.py` | trusted side: the internal signals from a recording and the true parameters |
-| `rungs/<rung>/harness/` | the built harnesses (generated; edit `build_ladder.py` and rebuild instead) |
+| `../harnesses/information_ladder/<rung>/harness/` | the built harnesses (generated; edit `build_ladder.py` and rebuild instead) |
 | `data/` | grid A noise-free with the extra columns (generated, gitignored) |
 | `run_rung.py` | one solver run on a rung (solver_run.py with the rung's harness and data) |
 | `run_ladder.sh`, `summarize_ladder.py` | batches over rungs, and the table |

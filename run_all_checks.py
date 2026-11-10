@@ -10,7 +10,7 @@ API, sandbox and scorer (solver/tests/test_solver_run.py) and the RSI loop's fou
 take a few minutes and run anywhere the venv's numpy, pandas and sympy do.
 
 --andes needs ANDES (the shared venv on the Mac). It runs scorer/tests/test_scorer.py --quick, then scores the
-newest --rescore saved submissions in harness_v0/runs again with today's scorer and compares each with the score
+newest --rescore saved submissions in results/v0_baselines again with today's scorer and compares each with the score
 it got when it was made. A submission is pure data and the simulation is deterministic, so they should agree to
 the 4 decimals public.json keeps; a difference means the scorer changed (or the run was scored by an older one).
 --rebuild-grid simulates a grid again with test_cases/build_test_grids.py into a scratch folder and compares it with
@@ -44,9 +44,9 @@ def run_check(command):
 
 
 def newest_saved_submissions(count):
-    """(run folder, stored public.json) for the newest scored runs in harness_v0/runs, newest first."""
+    """(run folder, stored public.json) for the newest scored runs in results/v0_baselines, newest first."""
     runs = []
-    for run_dir in glob.glob(os.path.join(REPOSITORY_ROOT, "harness_v0", "runs", "batch_*", "2*")):
+    for run_dir in glob.glob(os.path.join(REPOSITORY_ROOT, "results", "v0_baselines", "*", "2*")):
         public_path = os.path.join(run_dir, "score", "public.json")
         if os.path.exists(public_path) and os.path.exists(os.path.join(run_dir, "submission.json")):
             runs.append(run_dir)

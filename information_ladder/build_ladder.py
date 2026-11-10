@@ -5,7 +5,7 @@ that add data columns, its copy of grid A's noise-free recordings.
     python information_ladder/build_ladder.py --check    # rebuild into a temporary folder and compare
 
 The rungs are defined in RUNGS below. Each starts from harness_v0 and adds one kind of information. Harness
-folders (rungs/<rung>/harness/) are small and committed; data folders (data/<name>/) are rebuilt from
+folders (harnesses/information_ladder/<rung>/harness/) are small and committed; data folders (data/<name>/) are rebuilt from
 test_cases/grid_A and ignored by git. Nothing here needs ANDES.
 """
 import argparse
@@ -26,7 +26,7 @@ from common.hidden_names import SIMULATOR_AND_DEVICE_NAMES  # noqa: E402
 from common.project_paths import SOLVER_DATA_DIRS, STARTING_HARNESS_DIR, TEST_CASES_DIR  # noqa: E402
 
 TOOL_SOURCES = LADDER_DIR / "harness_tools"
-RUNGS_DIR = LADDER_DIR / "rungs"
+RUNGS_DIR = REPOSITORY_ROOT / "harnesses" / "information_ladder"
 DATA_DIR = LADDER_DIR / "data"
 ANSWER_KEY = TEST_CASES_DIR / "grid_A" / "holdout" / "answer_key.json"
 
@@ -173,7 +173,7 @@ def v0_method_with_grid_check():
         else:
             out.append(line)
     if GRID_CHECK_STEP not in out or FINAL_STEP not in out:
-        raise AssertionError("harness_v0/method.md changed: update build_ladder.py's step replacements")
+        raise AssertionError("harnesses/v0/harness/method.md changed: update build_ladder.py's step replacements")
     return "\n".join(out) + "\n"
 
 
@@ -184,7 +184,7 @@ def build_harness(rung, spec, target):
     system = (STARTING_HARNESS_DIR / "system.md").read_text().rstrip("\n")
     if spec.get("menu") is MENU_TRUE_ONLY:
         if UNDOCUMENTED_STRUCTURE not in system:
-            raise AssertionError("harness_v0/system.md changed: update UNDOCUMENTED_STRUCTURE in build_ladder.py")
+            raise AssertionError("harnesses/v0/harness/system.md changed: update UNDOCUMENTED_STRUCTURE in build_ladder.py")
         system = system.replace(UNDOCUMENTED_STRUCTURE, "Its gains and time constants are not documented.")
     (target / "system.md").write_text(system + "\n" + "\n".join(spec["facts"]) + "\n")
     if "menu" in spec:
@@ -258,7 +258,7 @@ def main():
                 print(f"{rung}: {'matches' if not differ else 'DIFFERS: ' + ', '.join(differ)}")
         return
     fingerprints = build_everything(RUNGS_DIR, DATA_DIR, with_data=not options.no_data)
-    print(f"r0_v0 (harness_v0/harness, unchanged): {harness_fingerprint(STARTING_HARNESS_DIR)}")
+    print(f"r0_v0 (harnesses/v0/harness, unchanged): {harness_fingerprint(STARTING_HARNESS_DIR)}")
     for rung, fingerprint in fingerprints.items():
         data = RUNGS[rung]["data"]
         print(f"{rung}: {fingerprint}   data: {'data/' + data if data else 'grid A noise-free (as harness_v0)'}")

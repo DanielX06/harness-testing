@@ -1,6 +1,6 @@
 """Summarize a batch of solver runs: one row per run (status, cost, score components), then the spread.
 
-    python solver/summarize_batch.py runs/batch_<time>      # prints the table and writes summary.md there
+    python solver/summarize_batch.py results/<study>/<batch>      # prints the table and writes summary.md there
 
 The grid M column fills in only for runs scored with config_rsi.json; older runs (before the status field)
 show their status as "-". Every run's spend counts, including runs that crashed.

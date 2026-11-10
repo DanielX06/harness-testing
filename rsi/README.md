@@ -16,12 +16,12 @@ $PY rsi/tests/test_harness_proposal.py
 $PY rsi/tests/test_updater_context.py
 ```
 
-Starting an experiment. The defaults are Haiku 5.5 at low effort as solver and updater, clean data, `scorer/config_rsi.json`, and a folder named for the date and time under `rsi/experiments/`:
+Starting an experiment. The defaults are Haiku 5.5 at low effort as solver and updater, clean data, `scorer/config_rsi.json`, and a folder named for the date and time under `rsi_loops/` (give a real loop a readable name with `--out`, as below):
 
 ```bash
 $PY rsi/rsi_experiment.py --iters 2 --baseline-runs 4 --pairs 4 --early-stop-pairs 2 --confirm-pairs 4   # smoke test
 $PY rsi/rsi_experiment.py --iters 30                                                                    # the real thing
-$PY rsi/rsi_experiment.py --iters 40 --parallel 4 --updater-model claude-sonnet-5-5 --updater-effort low --out rsi/experiments/<name>   # Sonnet as updater, as in run2
+$PY rsi/rsi_experiment.py --iters 40 --parallel 4 --updater-model claude-sonnet-5-5 --updater-effort low --out rsi_loops/<date>_<name>   # Sonnet as updater, as in run2
 $PY rsi/rsi_experiment.py --iters 30 --no-updater-python --updater-max-turns 20                        # the updater as in run1 and run2 (no sandbox), for an ablation
 ```
 
@@ -30,14 +30,14 @@ $PY rsi/rsi_experiment.py --iters 30 --no-updater-python --updater-max-turns 20 
 Resuming and extending:
 
 ```bash
-$PY rsi/rsi_experiment.py --resume rsi/experiments/<name>              # carry on where it stopped
-$PY rsi/rsi_experiment.py --resume rsi/experiments/<name> --iters 40   # extend a finished experiment
+$PY rsi/rsi_experiment.py --resume rsi_loops/<loop>              # carry on where it stopped
+$PY rsi/rsi_experiment.py --resume rsi_loops/<loop> --iters 40   # extend a finished experiment
 ```
 
 Running unattended, in tmux on the desktop (in WSL). Any non-zero exit leads to a resume, up to five, ten minutes apart. On a Mac, start it under `caffeinate -i` so the machine doesn't sleep:
 
 ```bash
-EXP=rsi/experiments/<name>
+EXP=rsi_loops/<date>_<name>
 $PY rsi/rsi_experiment.py --iters 40 --parallel 4 --workers 4 --out $EXP || \
   for i in 1 2 3 4 5; do sleep 600; $PY rsi/rsi_experiment.py --resume $EXP && break; done
 ```
@@ -45,14 +45,14 @@ $PY rsi/rsi_experiment.py --iters 40 --parallel 4 --workers 4 --out $EXP || \
 Packing an experiment that was stopped by hand (one that ends on its own is packed for you):
 
 ```bash
-$PY rsi/experiment_archive.py rsi/experiments/<name>              # pack
-$PY rsi/experiment_archive.py rsi/experiments/<name> --restore    # unpack
+$PY rsi/experiment_archive.py rsi_loops/<loop>              # pack
+$PY rsi/experiment_archive.py rsi_loops/<loop> --restore    # unpack
 ```
 
 One proposal, or one updater context, by hand:
 
 ```bash
-$PY rsi/harness_proposal.py --runs runs/<batch> --harness harness_v0/harness --out rsi/candidates/hNNN
+$PY rsi/harness_proposal.py --runs results/<study>/<batch> --harness harnesses/v0/harness --out results/unfiled/<proposal name>
 $PY rsi/updater_context.py --runs rsi/tests/fixtures/oct13_clean_batch --harness rsi/tests/fixtures/harness_v0_oct13 --out rsi/previews/oct13_clean
 $PY rsi/updater_context.py ... --scope all               # edit-anything scope: system.md becomes editable and the device-generic rule goes
 $PY rsi/updater_context.py ... --history history.jsonl   # with earlier attempts
@@ -76,7 +76,7 @@ $PY rsi/updater_context.py ... --count-tokens            # exact count from the 
 
 ## How the loop runs
 
-The loop copies the starting harness (`--start`, default `harness_v0/harness`) to `candidates/h000` and makes `--baseline-runs` (20) runs of it, so the first updater has something to read. Each iteration then goes like this.
+The loop copies the starting harness (`--start`, default `harnesses/v0/harness`) to `candidates/h000` and makes `--baseline-runs` (20) runs of it, so the first updater has something to read. Each iteration then goes like this.
 
 1. Propose. `harness_proposal.py` shows the updater the newest `--newest-runs` (20) runs of the current harness, from every block it has run in, and the history of earlier attempts. It edits a copy, running code in its sandbox as it goes (`--no-updater-python` takes the sandbox away), for up to `--updater-max-turns` (40) turns or `--updater-max-usd` ($2). A copy that fails a check is never run. Neither is one that is the same harness as the current one or any earlier one, trailing whitespace and blank lines ignored: its outcome is `duplicate`, its note names the harness it repeats, and it counts as an attempt not kept.
 2. Test block. Pairs of fresh runs, one of the candidate and one of the current harness in each pair, started together; which one starts first alternates. After `--early-stop-pairs` (8) pairs, a candidate whose mean composite on grid B is not below the current harness's is rejected early. Otherwise, after `--pairs` (20) pairs, it passes if its mean is lower and a one-sided permutation test on this block's 20 + 20 runs gives p ≤ `--alpha` (0.10).
@@ -111,7 +111,7 @@ For a run that should carry on while you're away, use the unattended command und
 
 ### What the experiment folder holds
 
-Everything goes in `rsi/experiments/<date>_<time>/` (or `--out`).
+Everything goes in `rsi_loops/<date>_<time>/` (or `--out`). `rsi_loops/` is its own git repository (`harness-experiments`); commit and push a finished loop from inside it, and add a README to the loop's folder saying what it tested and how it came out.
 
 | path | what it is |
 |---|---|

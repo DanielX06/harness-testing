@@ -1,6 +1,6 @@
 # Solver
 
-One solver run gives an agent grid A's recordings, lets it work in a Docker sandbox with `run_python`, takes the terminal model it submits ($V, \theta, V_{set} \to P, Q$, as JSON) and scores it closed loop with the scorer. The harness it is given (system.md, method.md, tools/) is a folder of its own; `../harness_v0/` has the starting one.
+One solver run gives an agent grid A's recordings, lets it work in a Docker sandbox with `run_python`, takes the terminal model it submits ($V, \theta, V_{set} \to P, Q$, as JSON) and scores it closed loop with the scorer. The harness it is given (system.md, method.md, tools/) is a folder of its own; `../harnesses/v0/` has the starting one.
 
 | file | what it is |
 |---|---|
@@ -31,11 +31,11 @@ $PY solver/solver_run.py haiku low --noise clean     # noise-free data (--noise 
 bash solver/run_solver_batch.sh haiku low 10 2       # 10 runs, 2 at a time, then summarize_batch.py
 bash solver/run_solver_batch.sh haiku low 10 2 clean
 CONFIG=scorer/config_rsi.json bash solver/run_solver_batch.sh haiku low 40 4 clean      # also scored on grid M
-HARNESS=rsi/experiments/long1/candidates/h003/harness CONFIG=scorer/config_rsi.json bash solver/run_solver_batch.sh haiku low 20 4 clean
-$PY solver/solver_run.py --resume runs/<batch>/<run>  # carry on a run that crashed or was stopped
+HARNESS=rsi_loops/<loop>/candidates/h003/harness CONFIG=scorer/config_rsi.json bash solver/run_solver_batch.sh haiku low 20 4 clean
+$PY solver/solver_run.py --resume results/<study>/<batch>/<run>  # carry on a run that crashed or was stopped
 ```
 
-A single run goes to `runs/<tag>/` unless `--out` says otherwise; a batch goes to `runs/batch_<time>_<model>_<effort>_<noise>[_<harness>]/`. `run_solver_batch.sh` takes two optional environment variables, as paths relative to where you run the command. `HARNESS` picks the harness folder (default `harness_v0/harness`) and adds that folder's name to the batch folder's name. `CONFIG` picks the scorer config (default `scorer/config_min.json`). `config_rsi.json` also scores every run on grid M, the hidden monitor, privately like grid A's held-out runs; use it for every batch the RSI loop will be compared against. Each batch folder also gets `batch.json` with the settings, the harness and config paths, and the git commit (ending in `-dirty` if anything was uncommitted).
+A single run goes to `results/unfiled/<tag>/` unless `--out` says otherwise; a batch goes to `results/unfiled/<date>_<time>_<model>-<effort>_<noise>[_<harness>]/`. Move a finished batch into a study folder under `results/` and add a line to that study's README. `run_solver_batch.sh` takes two optional environment variables, as paths relative to where you run the command. `HARNESS` picks the harness folder (default `harnesses/v0/harness`) and adds that folder's name to the batch folder's name. `CONFIG` picks the scorer config (default `scorer/config_min.json`). `config_rsi.json` also scores every run on grid M, the hidden monitor, privately like grid A's held-out runs; use it for every batch the RSI loop will be compared against. Each batch folder also gets `batch.json` with the settings, the harness and config paths, and the git commit (ending in `-dirty` if anything was uncommitted).
 
 `--noise` picks both the data and one line of the prompt: "The measured channels carry PMU-grade noise." (noisy, the wording every earlier run got) or "The measured channels are noise-free." (clean, data from `test_cases/grid_A/sandbox_data_clean`). The runner stops if the folder's `dataset.json` noise levels don't match the choice.
 

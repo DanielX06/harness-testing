@@ -2,17 +2,18 @@
 # Usage: bash solver/run_solver_batch.sh <model> <effort> [runs, default 10] [parallel, default 2] [noisy|clean, default noisy]
 #   model: 1-3 or haiku, sonnet, opus.  effort: 1-5 or low ... max.
 # The same harness run <runs> times, <parallel> at a time, each scored with the scorer config. Results go in
-# runs/batch_<time>_<model>_<effort>_<noisy|clean>[_<harness>]/ with batch.json (the settings) and summary.md.
+# results/unfiled/<date>_<time>_<model>-<effort>_<noisy|clean>[_<harness>]/ with batch.json (the settings) and summary.md.
+# Move the folder into a study folder under results/ once it is done (results/README.md lists them).
 # noisy: grid A data with PMU-grade noise, and the prompt says the channels carry it.
 # clean: the noise-free copy (test_cases/make_noise_free_sandbox.py), and the prompt says the channels are noise-free.
 # Two optional environment variables, as paths relative to where you run the command:
-#   HARNESS  harness folder (system.md, method.md, tools/), default harness_v0/harness; any other folder adds
-#            its name to the batch folder's name
+#   HARNESS  harness folder (system.md, method.md, tools/), default harnesses/v0/harness; any other folder adds
+#            its name to the batch folder's name (the folder above harness/ when the folder itself is called harness)
 #   CONFIG   scorer config, default scorer/config_min.json; scorer/config_rsi.json also scores every run on the
 #            hidden monitor grid M (use it for anything the RSI loop is compared with)
 #   bash solver/run_solver_batch.sh haiku low 10 2 clean
 #   CONFIG=scorer/config_rsi.json bash solver/run_solver_batch.sh haiku low 40 4 clean
-#   HARNESS=rsi/experiments/long1/candidates/h003/harness CONFIG=scorer/config_rsi.json bash solver/run_solver_batch.sh haiku low 20 4 clean
+#   HARNESS=rsi_loops/<loop>/candidates/h003/harness CONFIG=scorer/config_rsi.json bash solver/run_solver_batch.sh haiku low 20 4 clean
 # Keep <parallel> the same for every batch you compare: machine load changes how often tool calls hit the
 # 120 s limit, and summary.md reports that rate. A run that crashes can be finished with
 #   python solver/solver_run.py --resume <run folder>
@@ -29,7 +30,7 @@ if [ -n "${HARNESS:-}" ]; then
     [ -d "$HARNESS" ] || { echo "HARNESS folder not found: $HARNESS" >&2; exit 1; }
     HARNESS="$(cd "$HARNESS" && pwd)"
 else
-    HARNESS="$REPOSITORY/harness_v0/harness"
+    HARNESS="$REPOSITORY/harnesses/v0/harness"
 fi
 if [ -n "${CONFIG:-}" ]; then
     [ -f "$CONFIG" ] || { echo "CONFIG file not found: $CONFIG" >&2; exit 1; }
@@ -38,9 +39,13 @@ else
     CONFIG="$REPOSITORY/scorer/config_min.json"
 fi
 SUFFIX=""
-[ "$HARNESS" != "$REPOSITORY/harness_v0/harness" ] && SUFFIX="_$(basename "$HARNESS")"
-BASE="$REPOSITORY/runs/batch_$(date +%Y%m%d_%H%M%S)_${MODEL}_${EFFORT}_${NOISE}${SUFFIX}"
-mkdir -p "$REPOSITORY/runs"
+if [ "$HARNESS" != "$REPOSITORY/harnesses/v0/harness" ]; then
+    NAME="$(basename "$HARNESS")"
+    [ "$NAME" = "harness" ] && NAME="$(basename "$(dirname "$HARNESS")")"     # harnesses/<name>/harness, candidates/hNNN/harness
+    SUFFIX="_$NAME"
+fi
+BASE="$REPOSITORY/results/unfiled/$(date +%Y-%m-%d_%H%M%S)_${MODEL}-${EFFORT}_${NOISE}${SUFFIX}"
+mkdir -p "$REPOSITORY/results/unfiled"
 OUT="$BASE"; n=2
 until mkdir "$OUT" 2>/dev/null; do OUT="${BASE}_$n"; n=$((n + 1)); done   # two batches in the same second
 PYTHON="$REPOSITORY/../.venv/bin/python"

@@ -1,8 +1,8 @@
 """One updater call: show the updater how the current harness did, let it edit a copy of the harness, and check
 the result before any solver run sees it.
 
-    python rsi/harness_proposal.py --runs runs/batch_20261022_101500_haiku_low_clean --harness harness_v0/harness \\
-                                   --out rsi/candidates/h002
+    python rsi/harness_proposal.py --runs results/information_ladder/2026-10-31_haiku-low/r0_v0 --harness harnesses/v0/harness \\
+                                   --out results/unfiled/proposal_opus_high
 
 Writes, under --out:
     harness/          the candidate harness (system.md, method.md, tools/), ready for solver_run.py --harness
@@ -647,7 +647,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--runs", nargs="+", required=True, help="the current harness's run or batch folders")
     parser.add_argument("--harness", required=True, help="the current harness folder")
-    parser.add_argument("--out", required=True, help="new folder for the candidate, e.g. rsi/candidates/h001")
+    parser.add_argument("--out", required=True, help="new folder for the candidate, e.g. results/unfiled/proposal_opus_high")
     parser.add_argument("--scope", choices=["tools", "all"], default="tools")
     parser.add_argument("--history", default=None, help="history.jsonl from the loop")
     parser.add_argument("--model", default="claude-haiku-5-5")

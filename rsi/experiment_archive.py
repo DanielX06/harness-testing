@@ -1,7 +1,7 @@
 """Packs the bulky per-run files of an RSI experiment into one archive, and unpacks them again.
 
-    python rsi/experiment_archive.py rsi/experiments/<experiment>              # pack (by hand: after a killed loop)
-    python rsi/experiment_archive.py rsi/experiments/<experiment> --restore    # unpack
+    python rsi/experiment_archive.py rsi_loops/<experiment>              # pack (by hand: after a killed loop)
+    python rsi/experiment_archive.py rsi_loops/<experiment> --restore    # unpack
 
 rsi_experiment.py packs an experiment itself when its loop ends on its own (--iters, --patience or --max-usd), and
 unpacks it when --resume finds an archive, before anything reads the runs. A loop stopped by Ctrl-C, a signal or

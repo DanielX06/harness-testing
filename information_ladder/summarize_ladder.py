@@ -1,7 +1,7 @@
 """One row per rung for a ladder run (or several): selection score on grid B, grid M and grid A held-out, the
 P-f and Q-V components, cost and steps.
 
-    python information_ladder/summarize_ladder.py runs/ladder_<time>_<model>_<effort> [more ladder folders]
+    python information_ladder/summarize_ladder.py results/information_ladder/<date>_<model>-<effort> [more ladder folders]
 
 Writes ladder_summary.md into the first folder. Rows are in rung order; a rung with no finished runs shows "-".
 Mean and standard deviation are over finished runs; runs that failed to score (2) are included, since that is

@@ -1,7 +1,7 @@
 """Score saved solver runs again with today's scorer, for when the scorer itself was wrong.
 
-    python scorer/rescore_runs.py runs/<batch>/2*/ --reason "why" [--workers 2]
-    python solver/summarize_batch.py runs/<batch>
+    python scorer/rescore_runs.py results/<study>/<batch>/2*/ --reason "why" [--workers 2]
+    python solver/summarize_batch.py results/<study>/<batch>
 
 A submission is pure data, so a run can be scored again at no API cost. Only finished runs are scored. Each run's
 old score/ and score.log are kept beside the new ones as score_before_<time>/ and score_before_<time>.log. The

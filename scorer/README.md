@@ -31,7 +31,7 @@ A submission is pure data. Expressions are converted from the Python AST to symp
 * **Limits:** 60 states, 200 defs, 200 params, 4000 characters per expression. Time `t` is not available. Defs are substituted into whatever uses them, so a short chain of defs can describe an enormous expression; each expression is measured with its defs written out and rejected above 20,000 nodes (the largest of the first 30 submissions, the truth included, has 262). A power of two numbers is rejected when its exponent is above 1000, since sympy would evaluate it exactly.
 * `baselines/flat.json` is the smallest valid submission.
 
-`python tools/check_submission.py submission.json val/A_val_vref_op2.csv` (the agent-side checker in `harness_v0/harness/tools/`, with its open-loop replay in `open_loop_replay.py`) parses the file with the scorer's rules, checks that the first sample is a steady state, and replays the run open loop (measured V and theta, logged Vset) as a sanity check.
+`python tools/check_submission.py submission.json val/A_val_vref_op2.csv` (the agent-side checker in `harnesses/v0/harness/tools/`, with its open-loop replay in `open_loop_replay.py`) parses the file with the scorer's rules, checks that the first sample is a steady state, and replays the run open loop (measured V and theta, logged Vset) as a sanity check.
 
 **How a setpoint step reaches a submission.** The submission's `Vset` becomes a constant `c_Vset` in the generated ANDES class. A held-out voltage-reference step is an ANDES `Alter` on that constant, at the same time and size as the `Alter` on REGF1's `vref` that produced the recording. The truth spec uses `Vset` in its voltage reference, and it reproduces the grid B step run to 1e-8 pu.
 
@@ -54,12 +54,12 @@ All components are normalized so that the flat prediction scores exactly 1.0 and
 ```bash
 cd "Fall DRA/Harness_testing"
 PY=../.venv/bin/python
-$PY scorer/score_submission.py scorer/baselines/flat.json --config scorer/config_min.json --out scorer/runs/flat
-$PY scorer/score_submission.py path/to/submission.json --out scorer/runs/<name> [--workers 4]      # config_min.json
-$PY scorer/score_submission.py path/to/submission.json --config scorer/config_rsi.json --out scorer/runs/<name>   # adds grid M
+$PY scorer/score_submission.py scorer/baselines/flat.json --config scorer/config_min.json --out results/scorer_reference/flat
+$PY scorer/score_submission.py path/to/submission.json --out results/scorer_reference/<name> [--workers 4]      # config_min.json
+$PY scorer/score_submission.py path/to/submission.json --config scorer/config_rsi.json --out results/scorer_reference/<name>   # adds grid M
 $PY scorer/tests/test_submission_parser.py    # the parser's rules and the truth's droops; no ANDES needed
 $PY scorer/tests/test_scorer.py               # closed loop on config_min.json; --quick skips the sensitivity sweep
-$PY scorer/rescore_runs.py runs/<batch>/2*/ --reason "why"    # finished solver runs scored again after a scorer fix
+$PY scorer/rescore_runs.py results/<study>/<batch>/2*/ --reason "why"    # finished solver runs scored again after a scorer fix
 ```
 
 From Python, `SubmissionScorer(config_path, worker_count).score(path)` returns a report with `.public` and `.private`, and `write_score_files(report, folder)` writes them. A script that uses it must keep its top level under `if __name__ == "__main__":`: on macOS the ANDES worker processes are spawned, and spawned processes re-import the main script.

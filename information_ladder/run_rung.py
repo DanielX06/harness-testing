@@ -1,7 +1,7 @@
 """One solver run on one rung of the information ladder: solver/solver_run.py with the rung's harness and data.
 
     python information_ladder/run_rung.py r3_internal_signals haiku low [solver_run.py options]
-    python information_ladder/run_rung.py r0_v0 sonnet low --config scorer/config_rsi.json --out runs/x
+    python information_ladder/run_rung.py r0_v0 sonnet low --config scorer/config_rsi.json --out results/unfiled/x
 
 Every solver_run.py option works (--config, --out, --workers, --label, --no-score). The rung is stored as the
 label rung=<name> in meta.json. The data are always noise-free: the rungs that add columns only have a

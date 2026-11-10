@@ -113,7 +113,7 @@ json.dump({"role_scores": {"selection": 0.5}, "grids": {"grid_B": {"score": 0.5,
 
 
 def settings(**changes):
-    values = dict(model_id="claude-haiku-5-5", effort="low", harness_dir=os.path.join(REPOSITORY_ROOT, "harness_v0", "harness"),
+    values = dict(model_id="claude-haiku-5-5", effort="low", harness_dir=os.path.join(REPOSITORY_ROOT, "harnesses", "v0", "harness"),
                   noise="clean", scorer_config=os.path.join(REPOSITORY_ROOT, "scorer", "config_min.json"),
                   labels={"block": "iter001_screen", "arm": "candidate"})
     values.update(changes)

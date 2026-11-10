@@ -8,7 +8,7 @@ Tdr decides what the droop does at 1 Hz: with Tdr = 5 s it barely acts there, so
 survives (Re G_QV(1 Hz) stays near +0.5); with Tdr = 1 s it cancels it (Re G_QV(1 Hz) near 0 or below).
 The script prints the linearized G_QV of each variant next to its scores so that is visible.
 
-    python experiments/qv_gain/run_droop.py --workers 3       # 7 variants, about 1 min each
+    python analyses/qv_gain/run_droop.py --workers 3       # 7 variants, about 1 min each
 
 Results: variants/droop_*.json, scores/droop_*/, results_droop.md.
 How to read it:
@@ -31,7 +31,7 @@ from scorer.score_components import frequency_response     # noqa: E402
 from scorer.scoring_grids import load_scoring_config       # noqa: E402
 from scorer.submission_parser import TerminalModel         # noqa: E402
 
-BATCH = os.path.join(ROOT, "harness_v0", "runs", "batch_20261011_182645_m1e1")
+BATCH = os.path.join(ROOT, "results", "v0_baselines", "2026-10-11_haiku-low_noisy_10runs")
 SCORE = os.path.join(ROOT, "scorer", "score_submission.py")
 CONFIG = os.path.join(HERE, "config_gridB.json")
 TRUE_GAIN = -25.10                                         # truth's steady-state dQ/dV on grid B (pu/pu)
