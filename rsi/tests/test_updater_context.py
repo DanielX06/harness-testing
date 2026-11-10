@@ -13,7 +13,7 @@ sys.dont_write_bytecode = True
 REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPOSITORY_ROOT)
 from common.harness_files import harness_fingerprint  # noqa: E402
-from rsi.updater_context import LeakError, UpdaterContextBuilder, history_text  # noqa: E402
+from rsi.updater_context import LeakError, UpdaterContextBuilder, history_text, load_run_summary  # noqa: E402
 
 FIXTURES = os.path.join(REPOSITORY_ROOT, "rsi", "tests", "fixtures")
 BATCH = os.path.join(FIXTURES, "oct13_clean_batch")         # ten Haiku-low runs from Oct 13, with their scores
@@ -77,7 +77,7 @@ check("tools/submission_parser.py (locked" in context.user_content[1]["text"] an
 # 2. history: rendering, scrubbing, and a loop-written field carrying a hidden name
 attempt = {"iteration": 1, "candidate": "h001", "parent": "h000", "outcome": "rejected",
            "files_changed": ["method.md", "tools/stability_check.py"],
-           "root_cause": "The solver never checks GFM-style damping before it submits.",
+           "root_cause": "The solver never checks REGF1-style damping before it submits.",
            "change": "Added tools/stability_check.py and a step in method.md that runs it.",
            "predicted_effect": "B_line failures from 6 of 10 runs to about 3; composite down 0.15.",
            "at_risk": "Runs that already pass may spend steps on the check.",
@@ -113,7 +113,7 @@ check(text.count("Root cause given") == 5 and text.count("### Attempt") == 12, "
 folder = copy_batch("scrub")
 run = sorted(name for name in os.listdir(folder) if os.path.isdir(os.path.join(folder, name)))[0]
 with open(os.path.join(folder, run, "final.md"), "a") as file:
-    file.write("\nThis looks like an ANDES REGF model, maybe grid-forming.\n")
+    file.write("\nThis looks like an ANDES REGF model, maybe the Kundur case.\n")
 context = build([folder])
 check(context.stats["names_removed"] == 3 and "ANDES" not in context.user_content[2]["text"], "solver text scrubbed (3 names)")
 
@@ -217,8 +217,49 @@ if os.path.exists(golden):
 
     def user_message(text):
         return text[text.index("# User message"):]
-    check(without_parser(user_message(build().readable_markdown)) == without_parser(user_message(before)),
-          "the Oct 13 user message is unchanged by the rewrite, apart from the parser")
+
+    # Nov 10: the task prompt stopped describing check_submission.py's open-loop replay (the base harness's checker
+    # has none) and says that submission.json is what gets scored. Those two passages are put back as they were.
+    NOV10_PROMPT_CHANGES = [
+        ("parses a submission with the scorer's own rules and checks that your model is at rest at the recording's "
+         "first sample. Its docstring says what else it reports.",
+         "parses a submission with the scorer's own rules, checks that the first sample is at rest, and replays the "
+         "recording open loop: the measured V, theta and Vset drive your model, and its P and Q are compared with the "
+         "measured ones."),
+        ("Save your model as submission.json in your working directory before you finish: that file is what gets "
+         "scored. State the equations in plain form and say which parameters are well or poorly identified. Then end "
+         "with exactly one json code block with the same content as submission.json. It is scored only if the file is "
+         "missing or does not parse, or after a budget stop, when you can no longer save files.",
+         "State the equations in plain form and say which parameters are well or poorly identified. Then end with "
+         "exactly one json code block containing the submission. It should be the same content as the submission.json "
+         "you checked.")]
+
+    def with_old_prompt(text):
+        for new_text, old_text in NOV10_PROMPT_CHANGES:
+            assert text.count(new_text) == 1, new_text[:60]
+            text = text.replace(new_text, old_text)
+        return text
+    check(without_parser(with_old_prompt(user_message(build().readable_markdown))) == without_parser(user_message(before)),
+          "the Oct 13 user message is unchanged by the rewrite, apart from the parser and the Nov 10 prompt changes")
+
+# where the scored submission came from, as the updater is told it (solver_run.py's rule from Nov 10)
+sources = copy_batch("sources")
+run_dir = os.path.join(sources, sorted(name for name in os.listdir(sources) if os.path.isdir(os.path.join(sources, name)))[0])
+meta_path = os.path.join(run_dir, "meta.json")
+edit_json(meta_path, lambda meta: meta.update(submission_source="sandbox_file", final_message_differs=True, submission_rejected={}))
+check("differs from submission.json in the sandbox" in load_run_summary(run_dir)["final"],
+      "a final message whose json block differs from the scored file says so")
+edit_json(meta_path, lambda meta: meta.update(final_message_differs=False))
+final_text = load_run_summary(run_dir)["final"]
+check("differs from submission.json" not in final_text and "had no usable json block" not in final_text,
+      "a final message that repeats the file adds no note")
+edit_json(meta_path, lambda meta: meta.pop("final_message_differs"))
+check("had no usable json block" in load_run_summary(run_dir)["final"],
+      "an older run scored from the sandbox file reads as before")
+edit_json(meta_path, lambda meta: meta.update(submission_source="final_message",
+                                              submission_rejected={"sandbox_file": "output P: unknown name 'P'"}))
+check("was not scored (output P: unknown name 'P')" in load_run_summary(run_dir)["final"],
+      "a sandbox file the parser rejected is named, with the parser's reason")
 
 shutil.rmtree(work, ignore_errors=True)
 print(f"\nall {passed} checks passed")

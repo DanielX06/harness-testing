@@ -50,8 +50,9 @@ def summarize(batch_dir):
         if "score" in grid_m:
             monitor_scores.append(grid_m["score"])
         shown_selection = selection if selection is not None else meta.get("score_error", "-")
+        source = (meta.get("submission_source") or "-") + (" (final message differs)" if meta.get("final_message_differs") else "")
         lines.append(f"| {meta['tag']} | {meta.get('status', '-')} | {meta['spent_usd']:.2f} | {meta['steps']} | "
-                     f"{meta.get('tool_timeouts', '-')} | {meta.get('submission_source') or '-'} | {shown_selection} | "
+                     f"{meta.get('tool_timeouts', '-')} | {source} | {shown_selection} | "
                      f"{cell(grid_b, 'td')} | {cell(grid_b, 'fr')} | {cell(grid_b, 'par')} | {cell(grid_a, 'score')} | "
                      f"{cell(grid_m, 'score')} |")
     costs = np.array([meta["spent_usd"] for meta in runs])

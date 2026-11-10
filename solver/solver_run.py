@@ -21,8 +21,11 @@ The run folder (<out>/<run tag>/) holds
   checkpoint.json  the conversation so far, rewritten after every message; removed when the run finishes
   sandbox/         the agent's working folder; removed when the run finishes, kept for --resume otherwise
   transcript.json  every message (the diagram replaced by its file name); final.md, the last message
-  submission.json  the last json block of the final message, or the sandbox's submission.json; {} if neither
-                   parses, which scores 2
+  submission.json  what was scored: the sandbox's submission.json, or the final message's last json block if
+                   the file is missing or the scorer's parser rejects it (the other way round after the budget
+                   stop, when the agent could not save a file); {} if there is neither, which scores 2.
+                   submission_final_message.json (or submission_sandbox_file.json) keeps the copy that was not
+                   scored when the two differ; meta.json's final_message_differs and submission_rejected say so
   score/, score.log  the scorer's public.json and private.json, and its output
 
 Status values in meta.json:
@@ -36,8 +39,8 @@ Status values in meta.json:
 
 API problems that usually pass (a lost connection, an overloaded or failing server, a rate limit) are retried in
 place for about 35 minutes before the run counts as crashed. A conversation that has outgrown the model's context
-window ends the agent's work like a final message without a json block would: the submission is taken from the
-sandbox's submission.json, or the run scores 2. That is the run's own outcome, not a crash.
+window ends the agent's work like a final message without a json block would: the sandbox's submission.json is
+scored, or the run scores 2. That is the run's own outcome, not a crash.
 """
 import argparse
 import base64
@@ -58,6 +61,7 @@ from common.harness_files import harness_fingerprint  # noqa: E402
 from common.project_paths import (DEFAULT_RUNS_DIR, MIN_SCORER_CONFIG, SCORER_SCRIPT, SOLVER_DATA_DIRS,  # noqa: E402
                                   STARTING_HARNESS_DIR, SUBMISSION_PARSER_FILE, TASK_PROMPT_FILE)
 from common.run_provenance import docker_image_id, git_commit  # noqa: E402
+from scorer.submission_parser import SubmissionError, TerminalModel  # noqa: E402
 from solver.python_sandbox import DOCKER_EXECUTABLE, SANDBOX_IMAGE, DockerPythonSandbox  # noqa: E402
 
 API_BUDGET_USD = 20.0                   # per run; the agent is told to submit once the next steps could pass it
@@ -168,21 +172,57 @@ def data_dir_for(noise):
     return data_dir
 
 
-def extract_submission(final_text, sandbox_dir):
-    """(submission, where it came from): the last json code block of the final message that parses as JSON;
-    failing that, submission.json in the sandbox; failing that, (None, "none")."""
-    for block in reversed(re.findall(r"```json\s*\n(.*?)```", final_text, re.S)):
-        try:
-            return json.loads(block), "final_message"
-        except json.JSONDecodeError:
-            continue
+def submission_problem(submission):
+    """None if the scorer's parser accepts the submission, otherwise what it objects to."""
+    try:
+        TerminalModel(submission)
+    except SubmissionError as error:
+        return str(error)
+    except Exception as error:      # the parser should raise only SubmissionError, but this must never end a run
+        return f"{type(error).__name__}: {error}"
+    return None
+
+
+def extract_submission(final_text, sandbox_dir, budget_stop=False):
+    """(submission, source, notes, candidates): what to score and where it came from.
+
+    There are two candidates: submission.json in the sandbox, the file the agent wrote and checked, and the last
+    json code block of the final message that parses as JSON, which the agent retyped (the Oct 31 ladder lost two
+    runs to copying errors there). The file is scored, and the final message is the fallback when the file is
+    missing or the scorer's parser rejects it. After the budget stop the agent could not run code, so its final
+    message may hold a model it never saved, and the order is reversed. When the parser rejects both, the first
+    one in that order is scored anyway (and scores 2); with neither, (None, "none", ...).
+    notes: final_message_differs (True or False when both exist, None otherwise) and rejected ({source: why}
+    for a candidate passed over or unreadable). candidates: {source: content} for both."""
+    candidates, rejected = {}, {}
     path = os.path.join(sandbox_dir, "submission.json")
     if os.path.exists(path):
         try:
-            return read_json(path), "sandbox_file"
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            pass
-    return None, "none"
+            candidates["sandbox_file"] = read_json(path)
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            rejected["sandbox_file"] = f"not valid JSON: {error}"
+    blocks = re.findall(r"```json\s*\n(.*?)```", final_text, re.S)
+    for block in reversed(blocks):
+        try:
+            candidates["final_message"] = json.loads(block)
+            break
+        except json.JSONDecodeError:
+            continue
+    if blocks and "final_message" not in candidates:
+        rejected["final_message"] = "no json block parses as JSON"
+    both = len(candidates) == 2
+    notes = {"final_message_differs": (candidates["sandbox_file"] != candidates["final_message"]) if both else None,
+             "rejected": rejected}
+    order = [source for source in (("final_message", "sandbox_file") if budget_stop else ("sandbox_file", "final_message"))
+             if source in candidates]
+    for source in order:
+        problem = submission_problem(candidates[source])
+        if problem is None:
+            return candidates[source], source, notes, candidates
+        rejected[source] = problem
+    if order:
+        return candidates[order[0]], order[0], notes, candidates
+    return None, "none", notes, candidates
 
 
 @dataclass
@@ -254,6 +294,7 @@ class SolverRun:
         meta = {"tag": tag, "model": settings.model_id, "effort": settings.effort, "harness": settings.harness_dir,
                 "harness_sha": harness_fingerprint(settings.harness_dir), "spent_usd": 0.0, "steps": 0, "tool_calls": 0,
                 "tool_timeouts": 0, "budget_stop": False, "agent_seconds": 0.0, "submission_source": None,
+                "final_message_differs": None, "submission_rejected": {},
                 "data": data_dir, "noise": settings.noise, "config": settings.scorer_config,
                 "status": "running", "error": None, "stop_reason": None, "api_retries": 0, "resumes": 0, "failures": 0,
                 "labels": settings.labels, "git_commit": git_commit(),
@@ -391,10 +432,17 @@ class SolverRun:
                                if block.get("type") == "text") if last_message["role"] == "assistant" else ""
         with open(os.path.join(self.run_dir, "final.md"), "w") as file:
             file.write(final_text)
-        submission, source = extract_submission(final_text, self.sandbox.folder)
+        submission, source, notes, candidates = extract_submission(final_text, self.sandbox.folder,
+                                                                   self.progress.budget_stop)
         with open(os.path.join(self.run_dir, "submission.json"), "w") as file:
             json.dump(submission if submission is not None else {}, file, indent=1)   # {} scores 2
-        self.meta["submission_source"] = source
+        if notes["final_message_differs"]:
+            for other, content in candidates.items():
+                if other != source:                      # the copy that was not scored, for a look later
+                    with open(os.path.join(self.run_dir, f"submission_{other}.json"), "w") as file:
+                        json.dump(content, file, indent=1)
+        self.meta.update(submission_source=source, final_message_differs=notes["final_message_differs"],
+                         submission_rejected=notes["rejected"])
         print(final_text, flush=True)
         self.progress.agent_seconds = self._agent_seconds()
         self.progress.phase = "scoring"

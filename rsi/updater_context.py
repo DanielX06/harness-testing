@@ -47,7 +47,7 @@ HIDDEN_FIELD_NAMES = (r"fr_entries|par_entries|role_scores|train_holdout|private
                       r"|par_detail|droop_truth|gains_truth|\"(?:fr|par)\"\s*:")
 # the only meta.json fields read; never "components", "role_scores" or "score_selection"
 META_FIELDS_READ = ("tag", "model", "effort", "harness_sha", "spent_usd", "steps", "tool_calls", "tool_timeouts",
-                    "budget_stop", "submission_source", "noise")
+                    "budget_stop", "submission_source", "final_message_differs", "submission_rejected", "noise")
 # A deliberately high estimate of the token count. English prose runs near 3.5 characters a token on earlier
 # Claude tokenizers, and code and tables of numbers run denser. Claude 4.7 and later models, Haiku 5.5 among
 # them, use a tokenizer that can give up to about 35% more tokens for the same text. --count-tokens returns
@@ -273,9 +273,22 @@ def load_run_summary(run_dir):
     final_path = os.path.join(run_dir, "final.md")
     final_message = read_text(final_path).strip() if os.path.exists(final_path) else ""
     source = run.get("submission_source")
-    if source == "sandbox_file" and os.path.exists(os.path.join(run_dir, "submission.json")):
-        final_message += ("\n\nThe final message had no usable json block, so the submission was taken from "
-                          "submission.json in the sandbox:\n" + fence(read_text(os.path.join(run_dir, "submission.json")), "json"))
+    differs = run.get("final_message_differs")        # missing for runs made before Nov 10: read as None
+    submission_path = os.path.join(run_dir, "submission.json")
+    if source == "sandbox_file" and os.path.exists(submission_path):
+        scored_copy = fence(read_text(submission_path), "json")
+        if differs:
+            final_message += ("\n\nThe json block in this final message differs from submission.json in the sandbox, "
+                              "and the file is what was scored:\n" + scored_copy)
+        elif differs is None:
+            final_message += ("\n\nThe final message had no usable json block, so the submission was taken from "
+                              "submission.json in the sandbox:\n" + scored_copy)
+    elif source == "final_message" and (run.get("submission_rejected") or {}).get("sandbox_file"):
+        final_message += (f"\n\nsubmission.json in the sandbox was not scored ({run['submission_rejected']['sandbox_file']}), "
+                          "so the json block of the final message was.")
+    elif source == "final_message" and run.get("budget_stop") and differs:
+        final_message += ("\n\nAfter the budget stop the json block of the final message was scored; it differs from "
+                          "the submission.json the solver had saved.")
     elif source == "none":
         final_message += "\n\nNo usable submission was found in the final message or the sandbox, so this run scored 2."
     run["final"] = final_message or "(no final message)"

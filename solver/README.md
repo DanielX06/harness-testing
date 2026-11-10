@@ -47,7 +47,8 @@ A single run goes to `results/unfiled/<tag>/` unless `--out` says otherwise; a b
 | `checkpoint.json` | the conversation so far, rewritten after every message; removed when the run finishes |
 | `sandbox/` | the agent's working folder; removed when the run finishes, kept for `--resume` otherwise |
 | `transcript.json`, `final.md` | every message (the diagram replaced by its file name), and the last one |
-| `submission.json` | the last json block of the final message, or the sandbox's `submission.json`; an empty object if neither parses, which scores 2 |
+| `submission.json` | what was scored: the sandbox's `submission.json`, or the final message's last json block when the file is missing or the scorer's parser rejects it (the other way round after a budget stop, when the agent cannot save files); an empty object if there is neither, which scores 2. Since Nov 10; before, the final message came first, and the Oct 31 ladder lost two r6 runs to copying errors there |
+| `submission_final_message.json` or `submission_sandbox_file.json` | the copy that was not scored, kept when the two differ; `meta.json` has `final_message_differs` and `submission_rejected` (why a copy was passed over) |
 | `score/`, `score.log` | `public.json` (grid B only) and `private.json` (every grid, grid M included), and the scorer's output |
 
 The RSI updater gets only the composite, the TD per held-out run and channel, and failures from `public.json` (decided Oct 17). FR and PAR feed the accept rule but are never shown.

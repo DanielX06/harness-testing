@@ -255,6 +255,65 @@ run = S.SolverRun.start(settings(), os.path.join(work, "runs"), client=FakeClien
 run.execute()
 check(meta_of(run)["submission_source"] == "sandbox_file", "without a json block, the sandbox's submission.json is used")
 
+
+def sandbox_holding(content):
+    def create(folder, *args):
+        sandbox = FakeSandbox(folder)
+        with open(os.path.join(folder, "submission.json"), "w") as file:
+            file.write(content if isinstance(content, str) else json.dumps(content))
+        return sandbox
+    return create
+
+
+def final_with(submission):
+    return final("The model.\n```json\n" + json.dumps(submission) + "\n```\n")
+
+
+OTHER = {"params": {"k": 0.1}, "states": {}, "outputs": {"P": "P0 + k*(V - V0)", "Q": "Q0"}}
+REJECTED = {"params": {}, "states": {}, "outputs": {"P": "P", "Q": "Q0"}}      # P is not a name the parser knows
+
+
+def scored(run):
+    return json.load(open(os.path.join(run.run_dir, "submission.json")))
+
+
+run, _ = start([final()], create_sandbox=sandbox_holding(SUBMISSION))
+run.execute()
+meta = meta_of(run)
+check(meta["submission_source"] == "sandbox_file" and meta["final_message_differs"] is False
+      and not os.path.exists(os.path.join(run.run_dir, "submission_final_message.json")),
+      "a final message that repeats the file: the file is scored, nothing flagged")
+run, _ = start([final_with(OTHER)], create_sandbox=sandbox_holding(SUBMISSION))
+run.execute()
+meta = meta_of(run)
+check(meta["submission_source"] == "sandbox_file" and scored(run) == SUBMISSION and meta["final_message_differs"] is True
+      and json.load(open(os.path.join(run.run_dir, "submission_final_message.json"))) == OTHER,
+      "a final message that differs from the file: the file is scored, the difference flagged and the copy kept")
+run, _ = start([final_with(OTHER)], create_sandbox=sandbox_holding(REJECTED))
+run.execute()
+meta = meta_of(run)
+check(meta["submission_source"] == "final_message" and scored(run) == OTHER and "unknown name" in meta["submission_rejected"]["sandbox_file"]
+      and json.load(open(os.path.join(run.run_dir, "submission_sandbox_file.json"))) == REJECTED,
+      "a file the parser rejects: the final message's block is scored instead")
+run, _ = start([final("Done.")], create_sandbox=sandbox_holding("{not json"))
+run.execute()
+meta = meta_of(run)
+check(meta["submission_source"] == "none" and "not valid JSON" in meta["submission_rejected"]["sandbox_file"],
+      "an unreadable file and no block: nothing to score, and the reason recorded")
+run, _ = start([final_with(REJECTED)], create_sandbox=sandbox_holding(REJECTED))
+run.execute()
+check(meta_of(run)["submission_source"] == "sandbox_file" and scored(run) == REJECTED,
+      "when the parser rejects both, the file is scored anyway (and scores 2)")
+budget = S.API_BUDGET_USD
+S.API_BUDGET_USD = 0.001
+run, _ = start([tool_call("print(1)"), final_with(OTHER)], create_sandbox=sandbox_holding(SUBMISSION))
+run.execute()
+S.API_BUDGET_USD = budget
+meta = meta_of(run)
+check(meta["budget_stop"] and meta["submission_source"] == "final_message" and scored(run) == OTHER
+      and json.load(open(os.path.join(run.run_dir, "submission_sandbox_file.json"))) == SUBMISSION,
+      "after the budget stop the final message is scored first, since the agent could not save a file")
+
 # 10. a conversation too long for the model ends the agent's work; the sandbox's submission is scored
 class TooLong(Exception):
     status_code = 400

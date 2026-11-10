@@ -197,7 +197,7 @@ def proposal(*writes):
 
 
 GOOD = proposal(("tools/closed_loop_check.py", TOOL), ("method.md", METHOD))
-FORBIDDEN = proposal(("method.md", METHOD + "It is a GFM unit.\n"))
+FORBIDDEN = proposal(("method.md", METHOD + "It is a REGF1 unit.\n"))
 CAREFUL = proposal(("method.md", METHOD + "9. Be careful.\n"))
 NO_OP = proposal(("method.md", METHOD + "9. x\n"))
 FADING = proposal(("tools/fading_check.py", FADING_TOOL), ("method.md", METHOD.replace("closed_loop_check", "fading_check")))
@@ -241,7 +241,7 @@ check(all(record.labels["harness"] == "h000" for record in current_runs)
       and len({record.tag for record in current_runs} & {record.tag for record in runs_in(experiment, "h000_baseline")}) == 0,
       "each block runs the current harness afresh; no run is reused from another block")
 context3 = open(os.path.join(experiment, "candidates", "h003", "context.md")).read()
-check("[name removed]" in history[1]["note"] and "GFM" not in history[1]["note"] and "GFM" not in context3
+check("[name removed]" in history[1]["note"] and "REGF1" not in history[1]["note"] and "REGF1" not in context3
       and "Attempt 2: h002 from h001, never run" in context3,
       "an invalid candidate's note is scrubbed, and the next updater never sees the name")
 check(history[1]["parent"] == "h001" and history[2]["parent"] == "h001", "later attempts build on the kept harness")

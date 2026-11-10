@@ -61,9 +61,9 @@ Limits: 60 states, 200 defs, 200 params, 4000 characters per expression.
 TOOLS
 run_python runs a Python script in your working directory, with numpy, pandas, scipy and sympy available. Each call starts a fresh Python process, but files you save persist for the rest of this run, so save fitted results you will reuse. Output is truncated to the last 20000 characters, and each call times out after 120 s.
 
-python tools/check_submission.py submission.json val/<file>.csv parses a submission with the scorer's own rules, checks that the first sample is at rest, and replays the recording open loop: the measured V, theta and Vset drive your model, and its P and Q are compared with the measured ones.
+python tools/check_submission.py submission.json val/<file>.csv parses a submission with the scorer's own rules and checks that your model is at rest at the recording's first sample. Its docstring says what else it reports.
 
 You may be told mid-task that the budget is reached. You must then submit your best model immediately.
 
 YOUR FINAL MESSAGE
-State the equations in plain form and say which parameters are well or poorly identified. Then end with exactly one json code block containing the submission. It should be the same content as the submission.json you checked.
+Save your model as submission.json in your working directory before you finish: that file is what gets scored. State the equations in plain form and say which parameters are well or poorly identified. Then end with exactly one json code block with the same content as submission.json. It is scored only if the file is missing or does not parse, or after a budget stop, when you can no longer save files.
