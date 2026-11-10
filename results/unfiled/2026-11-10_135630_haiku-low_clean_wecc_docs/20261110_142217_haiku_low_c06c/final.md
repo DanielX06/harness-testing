@@ -1,0 +1,26 @@
+The model is saved and passes the checker, but it does not generalize well to the load-change validation file, so I'm reporting that rather than calling it validated.
+
+## Result
+
+`submission.json` is saved. It passes `tools/check_submission.py` on both validation files and starts at rest. It is a physically-structured model, but its Q prediction is poor on the load-step validation recording, so treat it as provisional.
+
+**Structure (WECC-style droop grid-forming, VFlag=1, no limits):**
+- Internal source E at angle δ behind a coupling reactance XL, with P = V·E·sin(δ−θ)/XL and Q = (V·E·cos(δ−θ) − V²)/XL.
+- P-f droop: dδ/dt = ω0·mp·(P0 − Pm), where Pm is P passed through a filter of time constant TP.
+- Q-V droop: Vcmd = Vset − mq·(Qm − Q0), where Qm is Q passed through a filter of time constant TQ.
+- Voltage loop: E = clip(kpv·(Vcmd − Vm) + xv, 0, 1.5), with dxv/dt = kiv·(Vcmd − Vm) and Vm the voltage passed through a filter of time constant TV.
+- Initialisation solves E0 and δ0 from (V0, θ0, P0, Q0), so the model starts at rest at any operating point.
+
+**Fitted values (train only):** XL = 0.975, mq = 0.0345, kiv = 4.36, kpv = 0.558, mp = 0.0556, TP = 0.031 s, TQ = 0.001 s (at its lower bound), TV = 0.5 s (at its upper bound).
+
+**Identification quality:**
+- P is well captured: validation P error is 0.0006 pu on the setpoint-test file and 0.0015 pu on the load-step file.
+- Q is poorly identified and inconsistent with physics. XL = 0.97 is far outside the documented 0.05–0.25 pu range. Forcing XL inside that range fits clearly worse on train (about 0.015 vs 0.008 pu). TV and TQ sit at bounds, so the Q dynamics are not captured by this structure.
+- On `A_val_load_op1` (load step at bus 8), Q RMSE is 0.036 pu against a Q standard deviation of 0.014 pu, so the model predicts Q worse than a constant on that file. On `A_val_vref_op2` the Q RMSE is 0.009 pu.
+- Frequency-response and droop checks are untested, and the fault and generator-trip recordings were not used in the fit.
+
+**Likely next step:** the Q mismatch probably needs a different Q path (for example a fast direct voltage term or a current-limit/inner-loop element), with XL held in the documented range. I did not get to test that.
+
+```json
+{"params":{"XL":0.9749871616682835,"mq":0.034544664651595204,"kiv":4.355310093005439,"kpv":0.557887471559286,"mp":0.05562413875541478,"TP":0.031293857016982424,"TQ":0.001000003556652341,"TV":0.4999999999997876,"w0":376.99111843077515,"Emax":1.5},"defs":{"Vcmd":"Vset - mq*(Qm - Q0)","Eint":"Min(Max(kpv*(Vcmd - Vm) + xv, 0), Emax)","ph":"delta - theta","Pe":"V*Eint*sin(ph)/XL","Qe":"(V*Eint*cos(ph) - V**2)/XL"},"states":{"Pm":{"rhs":"(Pe - Pm)/TP","init":"P0"},"Qm":{"rhs":"(Qe - Qm)/TQ","init":"Q0"},"Vm":{"rhs":"(V - Vm)/TV","init":"V0"},"delta":{"rhs":"w0*mp*(P0 - Pm)","init":"theta0 + atan2(P0*XL/V0, Q0*XL/V0 + V0)"},"xv":{"rhs":"kiv*(Vcmd - Vm)","init":"sqrt((Q0*XL/V0 + V0)**2 + (P0*XL/V0)**2)"}},"outputs":{"P":"Pe","Q":"Qe"}}
+```
