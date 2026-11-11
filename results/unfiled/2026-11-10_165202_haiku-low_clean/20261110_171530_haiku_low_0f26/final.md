@@ -1,0 +1,38 @@
+I saved the model to `submission.json`. It is a reasonable first model, not a validated match. On the two validation recordings it passes the rest-state check, and the open-loop replay errors are P 4e-4 and 1e-3 pu, and Q 7e-3 and 8e-3 pu. For comparison, a flat model gives 0.024–0.06 pu. I did not run the closed-loop or linearization checks, and the Q fit is weakest on the fault and line-trip recordings.
+
+**Model**
+
+- **Active power:** a frequency droop with a derivative filter, plus a weak voltage term and a first-order lag:
+  - ω̂ = (θ − θ0 − y)/Tf, where y is a filter state, so ω̂ is the high-passed rate of θ.
+  - P_target = P0 − Kp·ω̂ + Kpv·(V − V0)
+  - dP/dt = (P_target − P)/Tp
+- **Reactive power:** a first-order lag on a static voltage-reference target:
+  - Q_target = Q0 + Ka·(Vset − V0) − Kb·(V − V0) + k·(P − P0)
+  - dQ/dt = (Q_target − Q)/Tq
+
+**Fitted values:** Kp = 0.0451 pu per rad/s, Tf = 0.009 s, Kpv = −0.080, Tp = 0.127 s, Ka = 2.16, Kb = 0.022, Tq = 2.51 s, k = 1.03.
+
+**Identification notes**
+
+- **P:** well identified. The generator trip showed P rising about 0.09 pu as frequency fell, which set the droop. Tf and Tp are small and poorly pinned down; the derivative filter is fast enough that its exact value matters little for the replay.
+- **Q against Vset:** Ka is reasonably constrained by the staged steps (a 0.02 pu step moved Q by about 0.05 pu).
+- **Q against V:** Kb is small (about −0.02 pu per pu, i.e. a weak droop) and poorly identified. The steady-state data did not clearly show a negative dQ/dV, and an earlier unconstrained fit gave a positive one. Treat the sign of dQ/dV as uncertain.
+- **Q against P:** the coefficient k ≈ 1 is strongly tied to the Q lag and to Ka, so these three trade off against each other.
+- **Known weakness:** the Q model misses the fast Q excursions during the fault (about 0.025 pu RMSE on train) and the line trip (about 0.04 pu RMSE on train). Those are likely nonlinear, such as a current limit or a fast inner loop, which I did not model. Expect Q to be the weaker channel in the held-out scoring.
+
+```json
+{
+  "params": {"Kp": 0.0451, "Tf": 0.009, "Kpv": -0.0798, "Tp": 0.1267, "Ka": 2.1582, "Kb": 0.0219, "Tq": 2.5136, "k": 1.0278},
+  "defs": {
+    "om": "(theta-theta0-y)/Tf",
+    "Pt": "P0-Kp*om+Kpv*(V-V0)",
+    "Qt": "Q0+Ka*(Vset-V0)-Kb*(V-V0)+k*(xp-P0)"
+  },
+  "states": {
+    "xp": {"rhs": "(Pt-xp)/Tp", "init": "P0"},
+    "y": {"rhs": "((theta-theta0)-y)/Tf", "init": "0.0"},
+    "xq": {"rhs": "(Qt-xq)/Tq", "init": "Q0"}
+  },
+  "outputs": {"P": "xp", "Q": "xq"}
+}
+```

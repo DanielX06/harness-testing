@@ -1,0 +1,35 @@
+The model is saved to `submission.json`, and it passes the scorer's rest check on both validation files. It is a fitted phenomenological model, not a confirmed description of the real controller, and it is weakest on reactive power in one validation recording.
+
+**Model**
+
+Let V₀ and θ₀ be the t=0 voltage and angle, and Q₀ and P₀ the t=0 outputs. Voltage-reference errors are taken relative to V₀, which equals the schedule in every recording.
+
+- Reactive power: `Qraw = Q₀ + Ks·(Vset − V₀) − Kv·(V − V₀) + X`, with `Qf` a first-order lag of `Qraw` (time constant Tq) and output `Q = Qf`.
+- Integrator: `X' = Ki·(Vset − V) − X/Tx`, a leaky integral of voltage error that starts at 0.
+- Active power: a lag `z` tracks θ with time constant Tw, so (θ − z)/Tw approximates dθ/dt. Then `Pr = P₀ + Kpv·(V − V₀) − Kw·(θ − z)`, with `Pf` a lag of `Pr` (time constant Tp) and output `P = Pf`.
+
+**Fitted values:** Ks = 0.761, Kv = −1.306, Ki = 2.44, Tx = 4.54 s, Tq = 0.076 s, Kpv = −0.114, Kw = 1.22, Tw = 0.037 s, Tp = 0.085 s.
+
+**Identification status**
+- **P side:** well determined. Residual is about 0.0006 pu across the ambient, load and generator-trip recordings. The effective frequency droop is about Kw·Tw ≈ 0.045 pu per rad/s. Kw and Tw trade off against each other, since only their product is well constrained.
+- **Q side:** poorly determined. The setpoint tests are fitted well (≈0.008 pu on vref_op1, 0.004 on vref_op3). The fault and line-trip recordings are fitted to about 0.02–0.026 pu. The data do not support a simple static droop: a pure Q = K(Vset − V) fit was clearly worse (≈0.038 pu on vref_op1), so the proportional term on V has the opposite sign to the integral-driven steady slope.
+- **Steady-state droop:** the net steady-state slope dQ/dV ≈ −Kv − Ki·Tx ≈ −9.7 pu/pu is set mostly by the integrator leak. It is not directly identified, and I have not checked it against the device's true value. A large steep droop like this could behave poorly in closed loop.
+- **Validation:** on val/A_val_vref_op2 the open-loop replay gives Q RMSE 0.0051 against 0.0295 for a flat model. On val/A_val_load_op1 the Q RMSE is 0.0215 against 0.0276 flat, so Q is barely better than flat there. P is good on both (RMSE ≤ 0.0012).
+
+**Things I did not do**
+- I did not run closed-loop tests in the grid. The integrator plus the Kv sign is the main stability risk.
+- I did not find a physical explanation for the Q dip during fault recovery.
+
+```json
+{
+  "params": {"Ks": 0.7614, "Kv": -1.306, "Ki": 2.4406, "Tx": 4.5356, "Tq": 0.0761, "Kpv": -0.1144, "Kw": 1.2193, "Tw": 0.0369, "Tp": 0.0851},
+  "defs": {"Qraw": "Q0 + Ks*(Vset - V0) - Kv*(V - V0) + X"},
+  "states": {
+    "Qf": {"rhs": "(Qraw - Qf)/Tq", "init": "Q0"},
+    "X": {"rhs": "Ki*(Vset - V) - X/Tx", "init": "0.0"},
+    "z": {"rhs": "(theta - z)/Tw", "init": "theta0"},
+    "Pf": {"rhs": "(P0 + Kpv*(V - V0) - Kw*(theta - z) - Pf)/Tp", "init": "P0"}
+  },
+  "outputs": {"P": "Pf", "Q": "Qf"}
+}
+```

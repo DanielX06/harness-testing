@@ -1,0 +1,49 @@
+I saved the model to `submission.json`. It runs and starts at rest on all three files I checked. Validation replay errors are about 0.002 pu on P and 0.007 pu on Q for the two validation recordings. The fault recording is poor on Q (0.025 pu, about the same as the flat baseline), so the model does not capture the fault transient.
+
+**Structure (3 states, 8 params)**
+
+- Voltage measurement filter: `Vf' = (V − Vf)/Tm`, with `Tm ≈ 0.40 s`.
+- Angle-rate signal: `thf' = (θ − thf)/Tw`, with `w = (θ − thf)/Tw` as a high-passed angle rate. `Tw ≈ 0.59 s`.
+- Reactive power: `qs' = (uq − qs)/Tq`, with `uq = Q0 + Kq·(Vset − Vf) + Kqv·(Vf − V0) + Kqw·w`, `Tq ≈ 2.43 s`, `Kq ≈ 2.86`, `Kqv ≈ 2.08`, `Kqw ≈ −0.046`. Output `Q = qs`.
+- Active power: `P = P0 + Kpv·(Vf − V0) + Kpw·w`, with `Kpv ≈ −0.21` and `Kpw ≈ −0.046`.
+
+**What the data showed**
+
+- Q responds to the setpoint within a fraction of a second, then settles over a few seconds as V moves. This is why the model has a voltage-error term with a lag on Q.
+- Q and P both depend on the angle rate (grid frequency). After the generator trip, the angle drifts at about −2 rad/s and P rises by about 0.09 pu. The droop is weak: about 17 pu of P per pu of frequency, or roughly 0.085 pu per 0.3 Hz.
+- A first-order-lag model with no angle-rate term left a large Q residual after the generator trip. Adding the angle-rate term halved it.
+
+**Parameter identification**
+
+- `Kpw` and `Kqw` converged to nearly the same value (−0.0456). This is suspicious. The optimiser may have tied them, or the data may not separate them, so treat both as poorly identified.
+- `Kq`, `Kqv` and `Tq` trade off against each other: only the net steady-state dQ/dV (about −0.8 pu) and the early Q step are well constrained. Individually they are poorly identified.
+- A second Q lag stage did not improve the fit, so I dropped it.
+- I did not run the closed-loop checks or the frequency-response and droop comparisons. The angle-rate term is a high-pass of θ, which is noise-free here, but it may amplify fast angle motion in closed loop. This is the main risk.
+
+```json
+{
+  "params": {
+    "Kq": 2.856132464945288,
+    "Tq": 2.43076813941144,
+    "Tm": 0.39950429884700284,
+    "Kqv": 2.077983280397855,
+    "Kqw": -0.04556494948093528,
+    "Kpw": -0.045646512075194094,
+    "Kpv": -0.2106288688397536,
+    "Tw": 0.590736728329739
+  },
+  "defs": {
+    "w": "(theta-thf)/Tw",
+    "uq": "Q0+Kq*(Vset-Vf)+Kqv*(Vf-V0)+Kqw*w"
+  },
+  "states": {
+    "Vf": {"rhs": "(V-Vf)/Tm", "init": "V0"},
+    "thf": {"rhs": "(theta-thf)/Tw", "init": "theta0"},
+    "qs": {"rhs": "(uq-qs)/Tq", "init": "Q0"}
+  },
+  "outputs": {
+    "P": "P0+Kpv*(Vf-V0)+Kpw*w",
+    "Q": "qs"
+  }
+}
+```

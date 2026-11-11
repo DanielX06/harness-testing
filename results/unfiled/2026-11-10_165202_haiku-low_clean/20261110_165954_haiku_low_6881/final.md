@@ -1,0 +1,53 @@
+The submission is written and passes the at-rest check. On the validation files, the vref recording replays well (Q RMSE 0.005), but the load-change recording's Q error (0.029) is no better than a flat prediction. I'm stopping here rather than fitting further.
+
+## Summary
+
+**Saved:** `submission.json`, a three-state model (lagged voltage-reference Q response, filtered voltage, filtered angle).
+
+**Equations** (with `V0`, `theta0`, `P0`, `Q0` the operating point, `Vset` the live setpoint):
+
+- Filtered voltage: `vf' = (V − vf)/tm`
+- Q response: `qq' = (Ka·(Vset − V0) + Kb·(vf − V0) − qq)/tq`, and `Q = Q0 + qq`
+- Angle filter: `z' = (theta − z)/Tw`
+- Active power: `P = P0 + Kpv·(V − V0) − Kw·(theta − z)`
+
+Fitted values: Ka ≈ 1.56, Kb ≈ 1.11, tq ≈ 0.030 s, tm ≈ 0.026 s, Kpv ≈ −0.035, Kw ≈ 0.37, Tw ≈ 0.12 s. These came from the 10 ms-decimated fit, so the fast constants (tq, tm) are rough.
+
+**Identification quality**
+- **Well identified:** the Q response to voltage-reference steps (fast, about 0.03 s lag) and the small P sensitivity to V. Vref and ambient recordings fit to Q error around 0.003–0.007.
+- **Poorly identified:** the event response. Fault and line-trip recordings still show Q errors of about 0.02–0.03. After a line trip, Q settles about 0.03 pu above what V and Vset predict, so there is a hidden state I did not capture. The validation load-change recording has Q error 0.029, equal to a flat prediction.
+- **Frequency droop (Kw, Tw):** poorly constrained. The angle-lag term is weakly excited in the recordings.
+- **Steady-state dQ/dV:** the fitted Kb > 0 means Q rises with V, which is opposite to a conventional voltage droop. The data seemed to prefer this, but it is a positive feedback term, so it could destabilise the closed-loop grid. I did not verify closed-loop stability; the checker only ran open-loop replay.
+
+**Rejected candidates**
+- Single-gain lagged droop: poor on events (Q error about 0.025–0.03).
+- PI controller (Kp, Ki, integrator): fits events in principle, but the V filter pushed to its bound and vref replay degraded to Q ≈ 0.03.
+- Combined lagged-plus-integrator model: little gain on events, and vref fit still weaker than model 3.
+
+**Recommendation:** treat this as an approximate model. The next step would be a closed-loop check on the validation files and a hidden-state term for the post-trip Q offset.
+
+```json
+{
+  "params": {
+    "Ka": 1.5643,
+    "Kb": 1.1061,
+    "tq": 0.03,
+    "tm": 0.026,
+    "Kpv": -0.0351,
+    "Kw": 0.3741,
+    "Tw": 0.1226
+  },
+  "defs": {
+    "dv": "V-vf"
+  },
+  "states": {
+    "qq": {"rhs": "(Ka*(Vset-V0)+Kb*(vf-V0)-qq)/tq", "init": "0.0"},
+    "vf": {"rhs": "(V-vf)/tm", "init": "V0"},
+    "z": {"rhs": "(theta-z)/Tw", "init": "theta0"}
+  },
+  "outputs": {
+    "P": "P0+Kpv*(V-V0)-Kw*(theta-z)",
+    "Q": "Q0+qq"
+  }
+}
+```
