@@ -1,6 +1,7 @@
 """Builds the test grids from their specs in grid_specs/, deterministic from the seeds in those specs.
 
-    python test_cases/build_test_grids.py                        # grids A, B and M
+    python test_cases/build_test_grids.py                        # grids A, B and M (REGF1)
+    python test_cases/build_test_grids.py --grids A2,B2,M2       # the REGF2 grids
     python test_cases/build_test_grids.py --grids B --workers 4
     python test_cases/build_test_grids.py --grids B --out /tmp/rebuilt    # somewhere else, to compare
 
@@ -9,9 +10,10 @@ Each grid_specs/grid_<X>.json holds
   case                      the grid as the scorer rebuilds it: the device's slot, the network changes, the
                             operating points and every run's events. Written unchanged to holdout/case.json.
   device_under_test         the device model, its rating and its ANDES parameters (the same in every grid today).
-                            A new device (REGF2, REGF3) needs its recording variables in DEVICE_RECORDING_VARIABLES
-                            below, its voltage-setpoint variable in scorer/grids/kundur_family_builder.py and its
-                            truth model in scorer/truth/; then it is a change to this field.
+                            A new device needs its recording variables in DEVICE_RECORDING_VARIABLES below, its
+                            voltage-setpoint variable in scorer/grids/kundur_family_builder.py and its truth model in
+                            scorer/truth/; then it is a change to this field. REGF1 (grids A, B, M) and REGF2
+                            (grids A2, B2, M2) are set up.
   operating_conditions_log  (a grid with training runs) what the operator's log says about each operating point
   design_notes              why the grid is the way it is
 
@@ -48,6 +50,10 @@ DEVICE_RECORDING_VARIABLES = {
               "limiters": (("Psig", "Psig_y", "state", "Pmin", "Pmax"), ("Qsig", "Qsig_y", "state", "Qmin", "Qmax"),
                            ("dw", "dw_x", "algebraic", "dwmin", "dwmax"))},
 }
+# REGF2 is REGF1 with a VSM frequency law: the same P, Q and limiters (its dw limiter acts on w0*(INTw - 1))
+DEVICE_RECORDING_VARIABLES["REGF2"] = DEVICE_RECORDING_VARIABLES["REGF1"]
+# devices whose ANDES model adds a PLL to its bus: exactly one must be there, with the defaults the truth model uses
+DEVICE_PLL = {"REGF2": "PLL2"}
 # Kundur's loads and lines, as the operator's log names them
 LOAD_BUS = {"PQ_0": 7, "PQ_1": 8, "PQ_2": 10, "PQ_3": 9}
 LINE_BUSES = {"Line_0": (5, 6), "Line_1": (5, 6), "Line_2": (6, 7), "Line_3": (6, 7), "Line_4": (7, 8), "Line_5": (7, 8),
@@ -75,6 +81,12 @@ def simulate_run(job):
     system = build_system(model_name, device["params"], run_name, case_spec=case)
     system.TDS.config.tf, system.TDS.config.tstep, system.TDS.config.no_tqdm = run["tf"], SAMPLE_PERIOD_S, 1
     system.TDS.config.criteria = 0          # its angle test counts a tripped machine's free rotor
+    if model_name in DEVICE_PLL:
+        from scorer.truth.regf2_as_submission import PLL_DEFAULTS
+        pll = getattr(system, DEVICE_PLL[model_name])
+        if pll.n != 1 or abs(pll.Kp.v[0] - PLL_DEFAULTS["Kpll"]) > 1e-12 or abs(pll.Ki.v[0] - PLL_DEFAULTS["Kipll"]) > 1e-12:
+            raise RuntimeError(f"{run_name}: expected one {DEVICE_PLL[model_name]} with Kp, Ki = "
+                               f"{PLL_DEFAULTS['Kpll']}, {PLL_DEFAULTS['Kipll']}; found {pll.n}")
     system.TDS.run()
     if system.TDS.busted or system.exit_code != 0 or system.dae.t < run["tf"] - 1e-9:
         raise RuntimeError(f"{run_name}: the time-domain simulation failed at t={float(system.dae.t):.4f}")

@@ -3,7 +3,7 @@
     python test_cases/draw_grid_diagrams.py      # grid_A/sandbox_data/system_diagram.png (the solver's copy: no case
                                                  #   or model names), grid_B/holdout/system_diagram.png (for you; the
                                                  #   solver never sees B), grid_M/holdout/system_diagram.png (for you)
-    python test_cases/draw_grid_diagrams.py M    # only the grids named (A, B, M), e.g. to leave the solver's copy alone
+    python test_cases/draw_grid_diagrams.py M    # only the grids named (A, B, M, A2, B2, M2), e.g. to leave the solver's copy alone
 
 The labels below are written by hand from each grid's spec (grid_specs/), so change them when a grid changes.
 make_noise_free_sandbox.py copies grid A's diagram into sandbox_data_clean/; run it after redrawing grid A.
@@ -88,6 +88,7 @@ def draw_grid(grid):
         axis.text((x_from + x_to) / 2, 5.25, name, ha="center", fontsize=11, color=INK_COLOR)
     for index, line in enumerate(grid["notes"]):
         axis.text(-2.2, -1.55 - 0.32 * index, line, fontsize=9, color=MUTED_COLOR if index else INK_COLOR)
+    Path(grid["out"]).parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(grid["out"], dpi=150, bbox_inches="tight")
     plt.close(figure)
     print(grid["out"])
@@ -117,8 +118,12 @@ GRID_M = dict(
            "way. One 5-6 circuit out (dashed), L10 doubled to 300 MW, G2 at 500 MW, unit at 650 MW.",
            "Held-out runs at t = 2 s, 25 s each: voltage-reference step -1.5% (back at 14 s); L10 -40%; one 6-7 circuit trips."],
     out=TEST_CASES_DIR / "grid_M" / "holdout" / "system_diagram.png")
-GRIDS = {"A": GRID_A, "B": GRID_B, "M": GRID_M}
+# grids A2, B2 and M2 are A, B and M with the REGF2 unit in the slot: the same drawings (A2's is the solver's copy)
+GRID_A2 = dict(GRID_A, out=TEST_CASES_DIR / "grid_A2" / "sandbox_data" / "system_diagram.png")
+GRID_B2 = dict(GRID_B, out=TEST_CASES_DIR / "grid_B2" / "holdout" / "system_diagram.png")
+GRID_M2 = dict(GRID_M, out=TEST_CASES_DIR / "grid_M2" / "holdout" / "system_diagram.png")
+GRIDS = {"A": GRID_A, "B": GRID_B, "M": GRID_M, "A2": GRID_A2, "B2": GRID_B2, "M2": GRID_M2}
 
 if __name__ == "__main__":
-    for key in sys.argv[1:] or GRIDS:
+    for key in sys.argv[1:] or ("A", "B", "M"):
         draw_grid(GRIDS[key.upper()])

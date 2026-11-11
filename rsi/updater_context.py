@@ -36,8 +36,8 @@ from dataclasses import dataclass
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the repository root
 from common.harness_files import harness_fingerprint  # noqa: E402
 from common.hidden_names import SIMULATOR_AND_DEVICE_NAMES, remove_hidden_device_names  # noqa: E402
-from common.project_paths import (REPOSITORY_ROOT, RSI_SCORER_CONFIG, SOLVER_DATA_DIRS,  # noqa: E402
-                                  SUBMISSION_PARSER_FILE, TASK_PROMPT_FILE, UPDATER_PROMPT_FILE)
+from common.project_paths import (DEVICE_SOLVER_DATA_DIRS, REPOSITORY_ROOT, RSI_SCORER_CONFIG,  # noqa: E402
+                                  SUBMISSION_PARSER_FILE, TASK_PROMPT_FILE, UNIT_LABELS, UPDATER_PROMPT_FILE)
 from solver.python_sandbox import CALL_TIME_LIMIT_S  # noqa: E402
 from solver.solver_run import API_BUDGET_USD, NOISE_SENTENCES, SOLVER_TOOLS, TOOL_OUTPUT_CHARS  # noqa: E402
 
@@ -65,7 +65,8 @@ OUTCOME_DESCRIPTIONS = {
 # one of these means the loop put something there it should not have, so the build stops.
 LOOP_WRITTEN_HISTORY_FIELDS = ("iteration", "candidate", "parent", "outcome", "files_changed", "n_candidate",
                                "n_current", "mean_candidate", "mean_current", "se_difference", "p_value",
-                               "td_candidate", "td_current", "fail_rate_candidate", "fail_rate_current", "note")
+                               "td_candidate", "td_current", "fail_rate_candidate", "fail_rate_current", "note",
+                               "diff_summary", "report_mismatch", "by_unit")
 UPDATER_TOOLS = [
     {"name": "write_file",
      "description": "Write one file of the new harness with its complete content. path is relative to the "
@@ -108,6 +109,26 @@ SANDBOX_TEXT = (
     "output cut to its last {{UPDATER_OUTPUT_CHARS}} characters. Files your code writes stay for your later calls, "
     "except in tools/, which is rebuilt from your edits before each call. Only write_file and delete_file change "
     "the harness.")
+SANDBOX_UNITS_TEXT = (
+    " The runs take turns between units: the top of the sandbox holds {{FIRST_UNIT}}'s recordings, and {{OTHER_UNITS}} "
+    "hold the other units' (train/, val/, runs.json, dataset.json, as that unit's solver gets them). "
+    "submissions/scores.json says which unit each run was on.")
+UNITS_NOTE = (
+    "The solver's runs take turns between {{UNIT_COUNT}} different units ({{UNIT_LIST}}), each identified from its own "
+    "recordings and scored on its own grids. Part 2 says which unit each run was on. Your change is compared with the "
+    "current harness on all of them together, and it is kept only if it helps on average across them, so a change "
+    "that suits one unit's structure or numbers and hurts another's is rejected here as well as later.")
+LABEL_TO_DEVICE = {label: device for device, label in UNIT_LABELS.items()}
+
+
+def unit_data_dir(unit, noise):
+    """The recordings the solver gets for a unit."""
+    return DEVICE_SOLVER_DATA_DIRS[LABEL_TO_DEVICE[unit]][noise]
+
+
+def unit_folder(unit):
+    """Where a unit other than the first sits in the updater's sandbox: unit2/ for "unit 2"."""
+    return unit.replace(" ", "")
 TEST_STEP_WITH_SANDBOX = (
     "4. Run what you build before you submit it; a tool you have not run is a guess. Use run_python to run it the way "
     "the solver would, on the full recordings and on the submissions in submissions/. Check that it finishes well "
@@ -143,16 +164,22 @@ def read_json(path):
 
 
 def hidden_score_names_pattern(scorer_config=RSI_SCORER_CONFIG):
-    """HIDDEN_FIELD_NAMES plus every grid that is not a selection grid and its held-out runs. Grid A's training
-    and validation recordings are the solver's own data, so only its held-out runs count."""
-    visible_runs = set(read_json(os.path.join(SOLVER_DATA_DIRS["clean"], "runs.json")))
+    """HIDDEN_FIELD_NAMES plus every grid that is not a selection grid and its held-out runs. A training grid's
+    training and validation recordings are the solver's own data, so only its held-out runs count. scorer_config:
+    one config, or a list of them (one per device in a loop that takes turns between devices)."""
+    configs = [scorer_config] if isinstance(scorer_config, (str, os.PathLike)) else list(scorer_config)
+    visible_runs = set()
+    for data_dirs in DEVICE_SOLVER_DATA_DIRS.values():
+        if os.path.exists(os.path.join(data_dirs["clean"], "runs.json")):
+            visible_runs |= set(read_json(os.path.join(data_dirs["clean"], "runs.json")))
     names = set()
-    for grid in read_json(scorer_config)["grids"]:
-        if grid["role"] == "selection":
-            continue
-        names.add(grid["name"])
-        case = read_json(os.path.join(os.path.dirname(scorer_config), grid["path"], "holdout", "case.json"))
-        names |= set(case["runs"]) - visible_runs
+    for config in configs:
+        for grid in read_json(config)["grids"]:
+            if grid["role"] == "selection":
+                continue
+            names.add(grid["name"])
+            case = read_json(os.path.join(os.path.dirname(config), grid["path"], "holdout", "case.json"))
+            names |= set(case["runs"]) - visible_runs
     words = "|".join(rf"\b{re.escape(name)}\b" for name in sorted(names))
     return re.compile(HIDDEN_FIELD_NAMES + (f"|{words}" if words else ""))
 
@@ -257,6 +284,8 @@ def load_run_summary(run_dir):
         return None
     run = {key: meta.get(key) for key in META_FIELDS_READ}
     run["id"] = str(meta["tag"]).rsplit("_", 1)[-1]
+    device = (meta.get("labels") or {}).get("device") or meta.get("device") or "REGF1"
+    run["unit"] = UNIT_LABELS.get(device, "another unit")       # never the device's own name
     run["transcript"] = os.path.join(run_dir, "transcript.json")
     if run["tool_timeouts"] is None:                     # runs from before Oct 17 don't record it
         run["tool_timeouts"] = _timeouts_from_transcript(run["transcript"])
@@ -322,10 +351,10 @@ def check_generated_text(name, text, hidden_pattern):
 
 
 # ---- the three parts of the user message, and the instructions ---------------------------------------------
-def solver_view_text(harness_dir, noise, scope):
-    """Part 1: the files the next solver run will get."""
+def solver_view_text(harness_dir, noise, scope, units=("unit 1",)):
+    """Part 1: the files the next solver run will get. units: the units the runs take turns on; each has its own
+    runs.json and dataset.json."""
     prompt = read_text(TASK_PROMPT_FILE).replace("{{NOISE}}", NOISE_SENTENCES[noise])
-    data_dir = SOLVER_DATA_DIRS[noise]
     system_md_state = "editable in this run" if scope == "all" else "read-only in this run"
     parts = ["# Part 1. What the solver is given",
              "The image above is the system diagram, the first thing in the solver's first message.",
@@ -356,10 +385,13 @@ def solver_view_text(harness_dir, noise, scope):
     parts += ["## The solver's tool",
               f"{tool['name']}: \"{tool['description']}\" Each call starts a fresh Python process with no network, "
               f"is stopped after {CALL_TIME_LIMIT_S} s, and returns at most the last {TOOL_OUTPUT_CHARS} characters of "
-              f"output. The run stops at ${API_BUDGET_USD:.0f} of API cost.",
-              "## runs.json (the operator's log of each recording, locked)",
-              fence(read_text(os.path.join(data_dir, "runs.json")), "json"),
-              "## dataset.json (locked)", fence(read_text(os.path.join(data_dir, "dataset.json")), "json")]
+              f"output. The run stops at ${API_BUDGET_USD:.0f} of API cost."]
+    for unit in sorted(units):
+        data_dir, which = unit_data_dir(unit, noise), (f", {unit}'s runs" if len(units) > 1 else "")
+        parts += [f"## runs.json (the operator's log of each recording{which}, locked)",
+                  fence(read_text(os.path.join(data_dir, "runs.json")), "json"),
+                  f"## dataset.json ({unit + ', ' if len(units) > 1 else ''}locked)",
+                  fence(read_text(os.path.join(data_dir, "dataset.json")), "json")]
     return "\n\n".join(parts)
 
 
@@ -377,14 +409,23 @@ def run_table_text(runs, runs_available, harness_sha):
             if name not in disturbance_names:
                 disturbance_names.append(name)
     first = runs[0]
+    units = sorted({run.get("unit", "unit 1") for run in runs})
+    several = len(units) > 1
     lines = ["# Part 2. How the current harness did",
              f"Current harness {harness_sha}. The table has the {len(runs)} most recent of its {runs_available} runs, "
              f"all by {model_display_name(first['model'])} at {first['effort']} effort on the "
-             f"{'noise-free' if first['noise'] == 'clean' else 'noisy'} recordings."]
+             f"{'noise-free' if first['noise'] == 'clean' else 'noisy'} recordings"
+             + (f", taking turns between {' and '.join(units)}: different units, each identified from its own "
+                "recordings and scored on its own grids (the unit column says which)." if several else ".")]
     if len(composites) > 1:
         lines.append(f"Composite over the {len(composites)} scored runs: mean {statistics.mean(composites):.3f}, median "
                      f"{statistics.median(composites):.3f}, standard deviation {statistics.stdev(composites):.3f}, lowest "
                      f"{min(composites):.3f}, highest {max(composites):.3f}.")
+    if several:
+        lines.append("By unit: " + "; ".join(
+            f"{unit} mean {statistics.mean(run['composite'] for run in scored if run.get('unit', 'unit 1') == unit):.3f} "
+            f"over {sum(1 for run in scored if run.get('unit', 'unit 1') == unit)} runs"
+            for unit in units if any(run.get("unit", "unit 1") == unit for run in scored)) + ".")
     failure_counts = {name: sum(1 for run in scored if run["td_runs"].get(name, {}).get("failed"))
                       for name in disturbance_names}
     runs_with_a_failure = sum(1 for run in scored
@@ -399,17 +440,18 @@ def run_table_text(runs, runs_available, harness_sha):
     unscored = [run["id"] for run in runs if not run["scored"]]
     if unscored:
         lines.append(f"Not scored (the scorer itself failed): {', '.join(unscored)}.")
-    header = ("| run | composite | TD | " + " | ".join(f"{name} P / Q" for name in disturbance_names)
-              + " | steps | tool calls | timeouts | cost | budget stop |")
-    rows = [header, "|" + "---|" * (len(disturbance_names) + 8)]
+    header = ("| run |" + (" unit |" if several else "") + " composite | TD | "
+              + " | ".join(f"{name} P / Q" for name in disturbance_names) + " | steps | tool calls | timeouts | cost | budget stop |")
+    rows = [header, "|" + "---|" * (len(disturbance_names) + 8 + several)]
     for run in runs:
+        unit_cell = [run.get("unit", "unit 1")] if several else []
         if run["scored"]:
-            cells = [run["id"], f"{run['composite']:.3f}", f"{run['td']:.3f}" if run["td"] is not None else "-"]
+            cells = [run["id"], *unit_cell, f"{run['composite']:.3f}", f"{run['td']:.3f}" if run["td"] is not None else "-"]
             # no td_runs at all: the submission was rejected, or could not be built, so nothing ran
             cells += [_td_cell(run["td_runs"][name]) if name in run["td_runs"] else ("not run" if not run["td_runs"] else "-")
                       for name in disturbance_names]
         else:
-            cells = [run["id"], "not scored", "-"] + ["-"] * len(disturbance_names)
+            cells = [run["id"], *unit_cell, "not scored", "-"] + ["-"] * len(disturbance_names)
         cells += [str(run["steps"]), str(run["tool_calls"]),
                   "-" if run["tool_timeouts"] is None else str(run["tool_timeouts"]),
                   "-" if run["spent_usd"] is None else f"${run['spent_usd']:.3f}", "yes" if run["budget_stop"] else "no"]
@@ -481,7 +523,10 @@ def history_text(records, show_in_full=None):
             continue
         lines = [heading]
         if record.get("files_changed"):
-            lines.append("Files changed: " + ", ".join(record["files_changed"]))
+            lines.append("Files changed: " + (record["diff_summary"] + " (lines added and removed, from the diff)"
+                                              if record.get("diff_summary") else ", ".join(record["files_changed"])))
+        if record.get("report_mismatch"):
+            lines.append(f"The report and the diff disagree: {record['report_mismatch']}.")
         for key, label in (("root_cause", "Root cause given"), ("change", "Change"),
                            ("predicted_effect", "Predicted"), ("at_risk", "At risk")):
             if record.get(key):
@@ -495,6 +540,10 @@ def history_text(records, show_in_full=None):
             if record.get("p_value") is not None:
                 measured += f", one-sided p = {record['p_value']:.2f}"
             lines.append(measured + ").")
+            if record.get("by_unit"):
+                lines.append("By unit, this attempt / the harness it would have replaced: " + "; ".join(
+                    f"{unit} {values['mean_candidate']:.3f} / {values['mean_current']:.3f} ({values['n_candidate']} and "
+                    f"{values['n_current']} runs)" for unit, values in record["by_unit"].items()) + ".")
         td_candidate, td_current = record.get("td_candidate") or {}, record.get("td_current") or {}
         if td_candidate and td_current:
             lines.append("Mean TD, this attempt / the harness it would have replaced: " + "; ".join(
@@ -515,11 +564,23 @@ def history_text(records, show_in_full=None):
     return "\n\n".join(parts)
 
 
-def updater_instructions(model, effort, scope, lowest_score, highest_score, python_tool=False):
-    """updater_prompt.md with its placeholders filled in. python_tool: the updater has run_python."""
+def updater_instructions(model, effort, scope, lowest_score, highest_score, python_tool=False, units=("unit 1",)):
+    """updater_prompt.md with its placeholders filled in. python_tool: the updater has run_python. units: the units
+    the solver's runs take turns on."""
     template = read_text(UPDATER_PROMPT_FILE)
+    units = sorted(units)
+    if len(units) > 1:
+        unit_list = ", ".join(units[:-1]) + " and " + units[-1]
+        template = template.replace("{{UNITS_NOTE}}", UNITS_NOTE.replace("{{UNIT_COUNT}}", "two" if len(units) == 2 else str(len(units)))
+                                    .replace("{{UNIT_LIST}}", unit_list))
+    else:
+        template = template.replace("\n\n{{UNITS_NOTE}}", "")
     if python_tool:
-        template = template.replace("{{SANDBOX}}", SANDBOX_TEXT).replace("{{TEST_STEP}}", TEST_STEP_WITH_SANDBOX)
+        sandbox_text = SANDBOX_TEXT
+        if len(units) > 1:
+            sandbox_text += (SANDBOX_UNITS_TEXT.replace("{{FIRST_UNIT}}", units[0])
+                             .replace("{{OTHER_UNITS}}", ", ".join(unit_folder(unit) + "/" for unit in units[1:])))
+        template = template.replace("{{SANDBOX}}", sandbox_text).replace("{{TEST_STEP}}", TEST_STEP_WITH_SANDBOX)
     else:
         template = template.replace("{{SANDBOX}}\n\n", "").replace("{{TEST_STEP}}", TEST_STEP_WITHOUT_SANDBOX)
     note = ("It is a small, fast model, so short and concrete instructions work better than long ones, and a "
@@ -590,10 +651,11 @@ class UpdaterContextBuilder:
         if not scored:
             raise ValueError("none of the runs has score/public.json")
 
+        units = sorted({run["unit"] for run in runs})
         system_prompt = updater_instructions(model, effort, self.scope, min(run["composite"] for run in scored),
-                                             max(run["composite"] for run in scored), self.python_tool)
+                                             max(run["composite"] for run in scored), self.python_tool, units)
         check_generated_text("the updater prompt", system_prompt, self.hidden_pattern)
-        part1 = solver_view_text(self.harness_dir, noise, self.scope)
+        part1 = solver_view_text(self.harness_dir, noise, self.scope, units)
         check_generated_text("part 1 (the solver's files)", part1, self.hidden_pattern)
         table = run_table_text(runs, runs_available, harness_sha)
         check_generated_text("part 2 (run table)", table, self.hidden_pattern)
@@ -604,7 +666,7 @@ class UpdaterContextBuilder:
 
         best = min(scored, key=lambda run: (run["composite"], run["tag"]))
         worst = max(scored, key=lambda run: (run["composite"], run["tag"]))
-        diagram = os.path.join(SOLVER_DATA_DIRS[noise], "system_diagram.png")
+        diagram = os.path.join(unit_data_dir(units[0], noise), "system_diagram.png")   # the units share a network
         width, height = png_size(diagram)
         diagram_tokens = image_tokens(width, height)
         for plan in self.REDUCTION_PLANS:
@@ -633,7 +695,7 @@ class UpdaterContextBuilder:
                                 "image": diagram_tokens, "total": total_tokens, "chars_per_token_assumed": CHARS_PER_TOKEN},
                  "budget": self.token_budget, "reductions": reductions, "tool_output_chars_cut": characters_cut,
                  "names_removed": self.names_removed, "history_records": len(self.history), "warnings": self.warnings,
-                 "python_tool": self.python_tool}
+                 "python_tool": self.python_tool, "units": units}
         tools = UPDATER_TOOLS + ([RUN_PYTHON_TOOL] if self.python_tool else [])
         return UpdaterContext(system_prompt, user_content, markdown, stats, tools)
 

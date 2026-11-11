@@ -40,15 +40,30 @@ def git_commit():
     return result.stdout.strip() or "unknown"
 
 
+def inferred_config_name(run_dir):
+    """config_rsi.json if the run's private scores cover the monitor grid M, else config_min.json."""
+    private_path = os.path.join(run_dir, "score", "private.json")
+    grids = read_json(private_path).get("grids", {}) if os.path.exists(private_path) else {}
+    return "config_rsi.json" if "grid_M" in grids else "config_min.json"
+
+
 def rescore(run_dir, reason, workers=None, scorer_script=str(SCORER_SCRIPT)):
     """Score one run again. Returns (selection score before, after), or raises RuntimeError and leaves it as it was."""
     meta_path = os.path.join(run_dir, "meta.json")
+    if not os.path.exists(meta_path):
+        raise RuntimeError("no meta.json (the run never got going)")
     meta = read_json(meta_path)
-    if meta.get("status") != "finished":
+    # runs before Oct 17 have no status field: meta.json was written only once they had been scored
+    status = meta.get("status") or ("finished" if os.path.exists(os.path.join(run_dir, "score", "public.json")) else None)
+    if status != "finished":
         raise RuntimeError(f"status is {meta.get('status')!r}, not finished")
-    config = os.path.join(SCORER_DIR, os.path.basename(meta["config"]))
+    if not os.path.exists(os.path.join(run_dir, "submission.json")):
+        raise RuntimeError("no submission.json")
+    # runs before Oct 20 do not record their config either: read it off the grids their scores cover
+    config_name = os.path.basename(meta.get("config") or inferred_config_name(run_dir))
+    config = os.path.join(SCORER_DIR, config_name)
     if not os.path.exists(config):
-        raise RuntimeError(f"scorer config {os.path.basename(meta['config'])} not found in {SCORER_DIR}")
+        raise RuntimeError(f"scorer config {config_name} not found in {SCORER_DIR}")
     score_dir, log_path = os.path.join(run_dir, "score"), os.path.join(run_dir, "score.log")
     stamp = time.strftime("%Y%m%d_%H%M%S")
     kept_dir, kept_log = os.path.join(run_dir, f"score_before_{stamp}"), os.path.join(run_dir, f"score_before_{stamp}.log")
@@ -77,7 +92,8 @@ def rescore(run_dir, reason, workers=None, scorer_script=str(SCORER_SCRIPT)):
                           for grid, values in private["grids"].items()}
     meta.setdefault("rescored", []).append({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "git_commit": git_commit(),
                                             "reason": reason, "config": config, "kept": os.path.basename(kept_dir),
-                                            "before": before})
+                                            "before": before, **({} if meta.get("config") else
+                                                                 {"config_inferred": "the run did not record its config; read off the grids in its private.json"})})
     write_json(meta_path, meta)
     return before["score_selection"], public["score"]
 

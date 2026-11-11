@@ -6,6 +6,7 @@ twice, on two separate blocks of pairs.
     python rsi/rsi_experiment.py --iters 2 --baseline-runs 4 --pairs 4 --early-stop-pairs 2 --confirm-pairs 4
                                                                                # a smoke test: 12 to 36 runs
     python rsi/rsi_experiment.py --resume rsi_loops/2026-11-10_090000     # carry on after a crash or a stop
+    python rsi/rsi_experiment.py --iters 10 --devices REGF1,REGF2 ...         # pairs take turns between two units
 
 On a Mac, start it as `caffeinate -i python rsi/rsi_experiment.py ...` so the machine does not sleep mid-loop.
 
@@ -27,6 +28,16 @@ Each iteration:
   4. Stop after --iters iterations, --patience attempts in a row that were not kept, or once --max-usd has been
      spent (checked before each iteration). At about $0.017 a Haiku-low run, an early rejection costs about $0.30,
      a full rejection about $0.70 and a kept candidate about $1.40, plus the updater's few cents.
+
+Two devices (--devices REGF1,REGF2): pair 1 runs on the first device, pair 2 on the second, and so on (baseline runs
+too), each on its own training data and scored on its own grids (--config for the first device, the device's
+config_rsi in common/project_paths.py for the others). The early stop and the accept rule use the mean over all runs,
+and the permutation test relabels runs only within a device. The updater sees which unit each run was on ("unit 1",
+"unit 2"; never the device names). Every block count must then be a multiple of the number of devices.
+
+What changed, from the diff. history.jsonl and summary.md record the diff's own count of what each candidate changed
+(diff_summary), and report_mismatch when the updater's description of its change disagrees with the diff (it says
+nothing changed while files changed, or its change names a harness file the diff never touches).
 
 Comparing the candidate with the current harness's runs from the same block, rather than with older runs, keeps
 the comparison fair when the solver's behavior drifts over the days a loop takes (API changes, load), and every
@@ -74,6 +85,7 @@ import json
 import math
 import os
 import random
+import re
 import signal
 import statistics
 import subprocess
@@ -86,8 +98,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 from common.api_pricing import resolve_effort, resolve_model_id  # noqa: E402
 from common.harness_files import copy_harness, harness_content_fingerprint, harness_fingerprint  # noqa: E402
 from common.hidden_names import remove_hidden_device_names  # noqa: E402
-from common.project_paths import (DEFAULT_EXPERIMENTS_DIR, RSI_SCORER_CONFIG, SOLVER_RUN_SCRIPT,  # noqa: E402
-                                  STARTING_HARNESS_DIR)
+from common.project_paths import (DEFAULT_EXPERIMENTS_DIR, DEVICE_SCORER_CONFIGS, DEVICE_SOLVER_DATA_DIRS,  # noqa: E402
+                                  RSI_SCORER_CONFIG, SOLVER_RUN_SCRIPT, STARTING_HARNESS_DIR, UNIT_LABELS)
 from common.run_provenance import git_commit  # noqa: E402
 from rsi.experiment_archive import ArchiveError, archive, restore  # noqa: E402
 from rsi.harness_proposal import propose_candidate  # noqa: E402
@@ -98,7 +110,7 @@ from solver.solver_run import write_json_atomically  # noqa: E402
 RESUMABLE_SETTINGS = ("iters", "patience", "max_usd", "parallel", "workers", "updater_max_usd", "updater_max_turns",
                       "max_resumes")
 # settings added after the first experiments, and the value an experiment that predates each one ran with
-SETTINGS_BEFORE_THEY_EXISTED = {"updater_python": False, "updater_max_turns": 20}
+SETTINGS_BEFORE_THEY_EXISTED = {"updater_python": False, "updater_max_turns": 20, "devices": ["REGF1"]}
 WHY_NOT_RUN = {"no_change": "the updater changed nothing", "no_finish": "the updater did not call finish",
                "over_budget": "the updater ran past its budget",
                "context_full": "the updater's conversation outgrew its context before it called finish"}
@@ -142,10 +154,31 @@ class ExperimentSettings:
     self_test: bool = True
     max_resumes: int = 2                    # a run that has failed more often than this is replaced
     max_failures_in_a_row: int = 6          # this many failed sessions with no run finishing: stop the loop
+    devices: list = field(default_factory=lambda: ["REGF1"])    # the units the runs take turns on, pair by pair
+
+    def device_for(self, number):
+        """The device of pair (or baseline run) number, counting from 1: the devices take turns."""
+        return self.devices[(number - 1) % len(self.devices)]
+
+    def config_for(self, device):
+        """The scorer config of a device's runs: --config for the first device, the device's config_rsi otherwise."""
+        return self.scorer_config if device == self.devices[0] else str(DEVICE_SCORER_CONFIGS[device]["rsi"])
+
+    @property
+    def scorer_configs(self):
+        return [self.config_for(device) for device in self.devices]
 
     def problems(self):
         """Settings that cannot work."""
         problems = []
+        unknown = [device for device in self.devices if device not in DEVICE_SOLVER_DATA_DIRS]
+        if not self.devices or unknown or len(set(self.devices)) != len(self.devices):
+            problems.append(f"--devices must name different devices among {sorted(DEVICE_SOLVER_DATA_DIRS)}")
+        elif len(self.devices) > 1:
+            for name, count in (("--pairs", self.pairs), ("--early-stop-pairs", self.early_stop_pairs),
+                                ("--confirm-pairs", self.confirm_pairs), ("--baseline-runs", self.baseline_runs)):
+                if count % len(self.devices):
+                    problems.append(f"{name} must be a multiple of {len(self.devices)}, so every device gets as many runs")
         if self.pairs < 2:
             problems.append("--pairs must be at least 2")
         if self.confirm_pairs < 0 or self.confirm_pairs == 1:
@@ -229,6 +262,7 @@ class SolverRunRecord:
     composite: float | None = None      # the selection score (score/public.json), once the run has finished
     td_runs: dict = field(default_factory=dict)
     role_scores: dict = field(default_factory=dict)     # private scores: monitor.jsonl and summary.md only
+    device: str = "REGF1"                               # which unit the run identified
 
     @property
     def slot(self):
@@ -251,7 +285,8 @@ def read_run_record(run_dir):
     record = SolverRunRecord(run_dir=run_dir, tag=str(meta.get("tag") or os.path.basename(run_dir)),
                              labels=meta.get("labels") or {}, status=meta.get("status", "finished"),
                              failures=meta.get("failures") or 0, spent_usd=meta.get("spent_usd") or 0.0,
-                             pid=meta.get("pid"), error=meta.get("error"), role_scores=meta.get("role_scores") or {})
+                             pid=meta.get("pid"), error=meta.get("error"), role_scores=meta.get("role_scores") or {},
+                             device=(meta.get("labels") or {}).get("device") or meta.get("device") or "REGF1")
     if record.status == "finished":
         public = read_json_or_none(os.path.join(run_dir, "score", "public.json"))
         if public is not None and public.get("score") is not None:
@@ -420,9 +455,10 @@ class SolverLauncher:
 
     def start_new(self, block_dir, labels, harness_dir, log_path):
         settings = self.settings
+        device = labels.get("device", settings.devices[0])
         command = [sys.executable, str(SOLVER_RUN_SCRIPT), settings.solver_model, settings.solver_effort,
-                   "--harness", harness_dir, "--out", block_dir, "--config", settings.scorer_config,
-                   "--noise", settings.noise]
+                   "--harness", harness_dir, "--out", block_dir, "--config", settings.config_for(device),
+                   "--noise", settings.noise, "--device", device]
         command += [part for key, value in labels.items() for part in ("--label", f"{key}={value}")]
         if settings.workers:
             command += ["--workers", str(settings.workers)]
@@ -531,7 +567,7 @@ class BlockRunner:
             self.log(f"   {block} pair {pair} {arm}: replacing {latest.tag} ({latest.status} after "
                      f"{latest.failures} failures) with a new run")
         harness_name, harness_dir = harnesses[arm]
-        labels = {"block": block, "pair": pair, "arm": arm, "harness": harness_name}
+        labels = {"block": block, "pair": pair, "arm": arm, "harness": harness_name, "device": self.settings.device_for(pair)}
         return self.launcher.start_new(block_dir, labels, harness_dir, log_path)
 
     def _runs_by_slot(self, block):
@@ -581,14 +617,63 @@ def permutation_p_value(candidate_scores, current_scores, random_relabellings=20
     return (hits + 1) / (random_relabellings + 1)
 
 
+def stratified_permutation_p_value(strata, random_relabellings=20000, seed=0):
+    """One-sided permutation p-value for a lower pooled mean of the candidate's scores, relabelling candidate and
+    current only within each stratum (each device). strata: [(candidate scores, current scores)], one per device.
+    A gap between the devices' score levels then cannot pass for a gap between the harnesses. With one stratum
+    this is permutation_p_value. Exact when there are at most 50,000 relabellings, otherwise estimated."""
+    if len(strata) == 1:
+        return permutation_p_value(*strata[0], random_relabellings=random_relabellings, seed=seed)
+    candidate_count = sum(len(candidate) for candidate, _ in strata)
+    current_count = sum(len(current) for _, current in strata)
+    pooled = [candidate + current for candidate, current in strata]
+    totals = [sum(scores) for scores in pooled]
+
+    def difference(chosen_per_stratum):
+        candidate_sum = sum(sum(scores[index] for index in chosen) for scores, chosen in zip(pooled, chosen_per_stratum))
+        return candidate_sum / candidate_count - (sum(totals) - candidate_sum) / current_count
+
+    observed = difference([range(len(candidate)) for candidate, _ in strata])
+    relabellings = math.prod(math.comb(len(scores), len(candidate)) for scores, (candidate, _) in zip(pooled, strata))
+    if relabellings <= 50000:
+        choices = [list(itertools.combinations(range(len(scores)), len(candidate)))
+                   for scores, (candidate, _) in zip(pooled, strata)]
+        hits = sum(1 for chosen in itertools.product(*choices) if difference(chosen) <= observed + 1e-12)
+        return hits / relabellings
+    generator = random.Random(seed)
+    hits = sum(1 for _ in range(random_relabellings)
+               if difference([generator.sample(range(len(scores)), len(candidate))
+                              for scores, (candidate, _) in zip(pooled, strata)]) <= observed + 1e-12)
+    return (hits + 1) / (random_relabellings + 1)
+
+
 def compare_scores(candidate_scores, current_scores):
-    """The numbers the accept rule and the history use."""
-    variance_of_difference = sum(statistics.variance(scores) / len(scores) for scores in (candidate_scores, current_scores)
-                                 if len(scores) > 1)
-    return {"n_candidate": len(candidate_scores), "n_current": len(current_scores),
-            "mean_candidate": statistics.mean(candidate_scores), "mean_current": statistics.mean(current_scores),
-            "se_difference": math.sqrt(variance_of_difference),
-            "p_value": permutation_p_value(candidate_scores, current_scores)}
+    """The numbers the accept rule and the history use, for one device."""
+    return compare_strata({None: (candidate_scores, current_scores)})
+
+
+def compare_strata(scores_by_device):
+    """The numbers the accept rule and the history use. scores_by_device: {device: (candidate scores, current
+    scores)}. The means are over every run (with as many pairs per device, the mean of the devices' means); the
+    p-value relabels within devices. With more than one device, by_unit has each device's own numbers, under the
+    name the updater knows it by."""
+    strata = list(scores_by_device.values())
+    candidate_scores = [score for candidate, _ in strata for score in candidate]
+    current_scores = [score for _, current in strata for score in current]
+
+    def variance_of_mean(arm):
+        count = sum(len(stratum[arm]) for stratum in strata)
+        return sum(len(stratum[arm]) * statistics.variance(stratum[arm]) for stratum in strata
+                   if len(stratum[arm]) > 1) / count ** 2
+    comparison = {"n_candidate": len(candidate_scores), "n_current": len(current_scores),
+                  "mean_candidate": statistics.mean(candidate_scores), "mean_current": statistics.mean(current_scores),
+                  "se_difference": math.sqrt(variance_of_mean(0) + variance_of_mean(1)),
+                  "p_value": stratified_permutation_p_value(strata)}
+    if len(strata) > 1:
+        comparison["by_unit"] = {UNIT_LABELS.get(device, str(device)): {
+            "n_candidate": len(candidate), "n_current": len(current), "mean_candidate": statistics.mean(candidate),
+            "mean_current": statistics.mean(current)} for device, (candidate, current) in scores_by_device.items()}
+    return comparison
 
 
 def td_means_and_failure_rates(records):
@@ -605,8 +690,13 @@ def td_means_and_failure_rates(records):
     return td_means, failure_rates
 
 
-def monitor_stats(records):
-    """For you only: the selection (B), monitor (M) and train-holdout (A) means, and the per-run M - B gap."""
+def monitor_stats(records, by_device=False):
+    """For you only: the selection (B), monitor (M) and train-holdout (A) means, and the per-run M - B gap. Each run
+    is scored on its own device's grids (B and M for REGF1, B2 and M2 for REGF2). by_device adds each device's own."""
+    if by_device and len({record.device for record in records}) > 1:
+        return {**monitor_stats(records), "by_device": {device: monitor_stats([record for record in records
+                                                                               if record.device == device])
+                                                        for device in sorted({record.device for record in records})}}
     rows = [record.role_scores for record in records if "selection" in record.role_scores]
     stats = {"n": len(rows)}
     for role in ("selection", "monitor", "train_holdout"):
@@ -633,6 +723,56 @@ class BlockOutcome:
     comparison: dict
     candidate_runs: list
     current_runs: list
+
+
+# ---- what a candidate changed, from its diff --------------------------------------------------------------------
+# a report saying the harness was left as it was (run3's h006 said so while changing method.md)
+SAYS_NOTHING_CHANGED = re.compile(r"\bno (?:file )?changes?\b|\bno files? (?:were |was )?changed\b|\bnothing changed\b"
+                                  r"|\bunchanged\b|\bas it is\b|\bresubmit", re.I)
+FILE_NAME = re.compile(r"[\w./-]+\.(?:md|py|json|txt|csv)\b")
+
+
+def diff_summary(diff_text):
+    """'method.md +3 -1; tools/screen.py (new) +40' from a unified diff, as the diff counts it."""
+    counts, kinds, old_path, path = {}, {}, None, None
+    for line in diff_text.splitlines():
+        if line.startswith("--- "):
+            old_path = line[4:].strip()
+        elif line.startswith("+++ "):
+            new_path = line[4:].strip()
+            path = (old_path if new_path == "/dev/null" else new_path).removeprefix("a/").removeprefix("b/")
+            kinds[path] = "new" if old_path == "/dev/null" else "deleted" if new_path == "/dev/null" else None
+            counts.setdefault(path, [0, 0])
+        elif path is not None and line.startswith("+"):
+            counts[path][0] += 1
+        elif path is not None and line.startswith("-"):
+            counts[path][1] += 1
+    return "; ".join(f"{name}{f' ({kinds[name]})' if kinds[name] else ''} +{added} -{removed}"
+                     for name, (added, removed) in counts.items())
+
+
+def report_mismatches(change_text, changed_paths, harness_files):
+    """Where the updater's own description of its change disagrees with its diff: it says nothing changed while
+    files changed (run3's h006), or its change names a harness file the diff never touches (run3's h004 named
+    menu_options.json). harness_files: the relative paths in the parent and candidate harnesses."""
+    problems, text = [], change_text or ""
+    if changed_paths and SAYS_NOTHING_CHANGED.search(text):
+        problems.append("the report says nothing changed, but the diff changes " + ", ".join(changed_paths))
+    known = set(harness_files) | {os.path.basename(path) for path in harness_files}
+    changed = set(changed_paths) | {os.path.basename(path) for path in changed_paths}
+    named = sorted({name for name in FILE_NAME.findall(text) if name in known and name not in changed
+                    and os.path.basename(name) not in changed})
+    if named:
+        problems.append("the report's change names " + ", ".join(named) + ", which the diff does not touch")
+    return problems
+
+
+def harness_file_paths(harness_dir):
+    paths = []
+    for folder, sub_folders, names in os.walk(harness_dir):
+        sub_folders[:] = [name for name in sub_folders if name != "__pycache__" and not name.startswith(".")]
+        paths += [os.path.relpath(os.path.join(folder, name), harness_dir) for name in names if not name.startswith(".")]
+    return paths
 
 
 # ---- cycles (for you only) ------------------------------------------------------------------------------------
@@ -706,20 +846,39 @@ def write_summary(folder, settings):
              "accept rule uses, M the hidden monitor, A grid A's own held-out runs; each cell is candidate / current. "
              "The over-optimization signal is the candidate's M - B gap rising while its B improves. The current "
              "harness's B from block to block shows drift in the solver or the API, not in the harness. Repeats "
-             "lists earlier harnesses a candidate returns to (cycles.jsonl has the full lists).", "",
-             "| iter | block | candidate / current | runs | B | p | M - B | A | result | repeats | change |",
-             "|---|---|---|---|---|---|---|---|---|---|---|"]
+             "lists earlier harnesses a candidate returns to (cycles.jsonl has the full lists). The change column starts "
+             "with what the diff changed; the updater's own description follows, flagged when the two disagree."]
+    several = len(settings.devices) > 1
+    if several:
+        lines[-1] += (" Pairs take turns between " + ", ".join(f"{UNIT_LABELS.get(device, device)} ({device})"
+                                                                for device in settings.devices)
+                      + "; B is over all runs, B by unit is each unit's own (each run is scored on its own unit's "
+                        "grids), and the p-value relabels runs only within a unit.")
+    lines += ["", "| iter | block | candidate / current | runs | B |" + (" B by unit |" if several else "")
+              + " p | M - B | A | result | repeats | change |",
+              "|---|---|---|---|---|" + ("---|" if several else "") + "---|---|---|---|---|---|"]
+
+    def by_unit(block):
+        if block["kind"] == "baseline":
+            means = {UNIT_LABELS.get(device, device): value for device, value in (block.get("mean_current_by_device") or {}).items()}
+            return "; ".join(f"{unit} - / {number(value)}" for unit, value in means.items()) or "-"
+        return "; ".join(f"{unit} {number(values['mean_candidate'])} / {number(values['mean_current'])}"
+                         for unit, values in (block.get("by_unit") or {}).items()) or "-"
     for iteration in sorted(set(blocks_by_iteration) | set(history)):
         record, cycle = history.get(iteration, {}), cycles.get(iteration)
         repeats = repeats_text(cycle).replace("|", "/") or "-"
         change = record.get("change") or ""
+        if record.get("diff_summary"):
+            change = f"[{record['diff_summary']}] " + change
+        if record.get("report_mismatch"):
+            change = "REPORT/DIFF MISMATCH: " + record["report_mismatch"] + " / " + change
         if record.get("note"):
             change += (" / " if change else "") + "not run: " + record["note"]
-        change = change.replace("|", "/").replace("\n", " ")[:200]
+        change = change.replace("|", "/").replace("\n", " ")[:300]
         blocks = blocks_by_iteration.get(iteration, [])
         if iteration > 0 and not blocks:
-            lines.append(f"| {iteration} | - | {record.get('candidate', '-')} / {record.get('parent', '-')} | - | - | - | "
-                         f"- | - | {record.get('outcome', '-')} | {repeats} | {change} |")
+            lines.append(f"| {iteration} | - | {record.get('candidate', '-')} / {record.get('parent', '-')} | - | - |"
+                         + (" - |" if several else "") + f" - | - | - | {record.get('outcome', '-')} | {repeats} | {change} |")
         for position, block in enumerate(blocks):
             arms = monitor.get(block["block"], {})
             last = position == len(blocks) - 1
@@ -731,7 +890,7 @@ def write_summary(folder, settings):
                 runs, means = f"{block['n_candidate']} / {block['n_current']}", \
                     f"{number(block['mean_candidate'])} / {number(block['mean_current'])}"
             lines.append(f"| {iteration} | {block['block']} | {block.get('candidate') or '-'} / {block['current']} | {runs} | "
-                         f"{means} | {number(block.get('p_value'), 2)} | {both(arms, 'gap_mean')} | "
+                         f"{means} |" + (f" {by_unit(block)} |" if several else "") + f" {number(block.get('p_value'), 2)} | {both(arms, 'gap_mean')} | "
                          f"{both(arms, 'train_holdout')} | {result} | {repeats if last else ''} | {change if last else ''} |")
     with open(folder.summary, "w") as file:
         file.write("\n".join(lines) + "\n")
@@ -747,7 +906,7 @@ class RsiExperiment:
         self.log = LoopLog(self.folder.log)
         self.client = client                        # None: harness_proposal.py makes a real API client
         self.block_runner = BlockRunner(settings, self.folder, self.log, launcher, sleep, poll_s, launch_gap_s)
-        self.hidden_names = hidden_score_names_pattern(settings.scorer_config)
+        self.hidden_names = hidden_score_names_pattern(settings.scorer_configs)
 
     def scrub(self, text):
         """Loop-written notes go to later updaters: keep hidden and forbidden names out of them."""
@@ -811,12 +970,15 @@ class RsiExperiment:
                                               {"current": ("h000", starting_harness)})
         runs = [records[slot] for slot in sorted(records)]
         mean = statistics.mean(record.composite for record in runs)
+        by_device = ({device: statistics.mean(record.composite for record in runs if record.device == device)
+                      for device in settings.devices} if len(settings.devices) > 1 else None)
         append_jsonl(folder.blocks, {"iteration": 0, "block": block, "kind": "baseline", "candidate": None,
                                      "current": "h000", "n_current": len(runs), "mean_current": mean,
+                                     **({"mean_current_by_device": by_device} if by_device else {}),
                                      "spent_usd": round(sum(record.spent_usd for record in folder.run_records(block)), 4),
                                      "runs": {"current": [record.tag for record in runs]}})
         append_jsonl(folder.monitor, {"iteration": 0, "block": block, "kind": "baseline",
-                                      "arms": {"current": {"harness": "h000", **monitor_stats(runs)}}})
+                                      "arms": {"current": {"harness": "h000", **monitor_stats(runs, by_device=True)}}})
         self.log(f"baseline mean composite {mean:.3f} over {len(runs)} runs")
 
     def _proposal(self, iteration, name, current):
@@ -840,7 +1002,7 @@ class RsiExperiment:
                                      max_usd=settings.updater_max_usd, smoke=settings.smoke,
                                      smoke_python=settings.smoke_python, client=self.client,
                                      newest_runs=settings.newest_runs, self_test=settings.self_test,
-                                     scorer_config=settings.scorer_config, python_tool=settings.updater_python,
+                                     scorer_config=settings.scorer_configs, python_tool=settings.updater_python,
                                      max_turns=settings.updater_max_turns)
         except SandboxUnavailable as error:
             raise InfrastructureError(f"the candidate's checker could not run: {error}. Start Docker, then --resume.") from error
@@ -855,6 +1017,15 @@ class RsiExperiment:
         if proposal["files_changed"] and os.path.exists(diff_path):
             with open(diff_path) as file:
                 record["diff_excerpt"] = file.read()
+            record["diff_summary"] = self.scrub(diff_summary(record["diff_excerpt"]))
+        harness_files = set(harness_file_paths(self.folder.harness_dir(current)))
+        if os.path.isdir(self.folder.harness_dir(name)):
+            harness_files |= set(harness_file_paths(self.folder.harness_dir(name)))
+        mismatches = report_mismatches(manifest.get("change"), [changed["path"] for changed in proposal["files_changed"]],
+                                       harness_files)
+        if mismatches:
+            record["report_mismatch"] = self.scrub("; ".join(mismatches))
+            self.log(f"   {name}: its report and its diff disagree: {record['report_mismatch']}")
         self.log(f"   {name}: {proposal['status']}" + (f": {manifest['change']}" if manifest.get("change") else ""))
         cycle = find_repeats(self.folder, iteration, name, current, proposal)
         if repeats_text(cycle):
@@ -918,14 +1089,14 @@ class RsiExperiment:
         stopped_early = False
         if stop_check:
             records = self.block_runner.run_slots(block, pair_slots(range(1, stop_check + 1)), arms)
-            early = compare_scores(*self._scores_by_arm(records))
+            early = compare_strata(self._scores_by_device(records))
             stopped_early = early["mean_candidate"] >= early["mean_current"]
             if stopped_early:
                 self.log(f"   {block}: after {stop_check} pairs the candidate is not ahead ({early['mean_candidate']:.3f} "
                          f"against {early['mean_current']:.3f}); stopping the block")
         if not stopped_early:
             records = self.block_runner.run_slots(block, pair_slots(range(1, pair_count + 1)), arms)
-        comparison = compare_scores(*self._scores_by_arm(records))
+        comparison = compare_strata(self._scores_by_device(records))
         passed = (not stopped_early and comparison["mean_candidate"] < comparison["mean_current"]
                   and comparison["p_value"] <= self.settings.alpha)
         candidate_runs = [records[slot] for slot in sorted(records) if slot[1] == "candidate"]
@@ -938,16 +1109,19 @@ class RsiExperiment:
             **comparison, "spent_usd": round(sum(record.spent_usd for record in self.folder.run_records(block)), 4),
             "runs": {"candidate": [record.tag for record in candidate_runs], "current": [record.tag for record in current_runs]}})
         append_jsonl(self.folder.monitor, {"iteration": iteration, "block": block, "kind": kind, "arms": {
-            "candidate": {"harness": candidate, **monitor_stats(candidate_runs)},
-            "current": {"harness": current, **monitor_stats(current_runs)}}})
+            "candidate": {"harness": candidate, **monitor_stats(candidate_runs, by_device=True)},
+            "current": {"harness": current, **monitor_stats(current_runs, by_device=True)}}})
         self.log(f"   {block}: {comparison['mean_candidate']:.3f} against {comparison['mean_current']:.3f} over "
                  f"{outcome.pairs_run} pairs, p = {comparison['p_value']:.3f}"
                  + (", stopped early" if stopped_early else ", passed" if passed else ", not passed"))
         return outcome
 
-    @staticmethod
-    def _scores_by_arm(records):
-        return tuple([records[slot].composite for slot in sorted(records) if slot[1] == arm] for arm in ARMS)
+    def _scores_by_device(self, records):
+        """{device: (candidate scores, current scores)}, each device's pairs in pair order."""
+        return {device: tuple([records[slot].composite for slot in sorted(records)
+                               if slot[1] == arm and self.settings.device_for(slot[0]) == device] for arm in ARMS)
+                for device in self.settings.devices
+                if any(self.settings.device_for(slot[0]) == device for slot in records)}
 
 
 # ---- starting and resuming ------------------------------------------------------------------------------------------
@@ -1043,7 +1217,10 @@ def parse_arguments(argv=None):
     parser.add_argument("--start", default=defaults.start, help="the starting harness")
     parser.add_argument("--scope", choices=["tools", "all"], default=defaults.scope)
     parser.add_argument("--config", dest="scorer_config", default=defaults.scorer_config,
-                        help="scorer config (config_rsi.json: B selects, M monitors)")
+                        help="scorer config of the first device's runs (config_rsi.json: B selects, M monitors); the "
+                             "other devices use their own config_rsi (common/project_paths.py)")
+    parser.add_argument("--devices", default=",".join(defaults.devices),
+                        help="comma-separated units the pairs take turns on, e.g. REGF1,REGF2 (default REGF1)")
     parser.add_argument("--workers", type=int, default=None, help="ANDES simulations at once when a run is scored")
     parser.add_argument("--patience", type=int, default=defaults.patience,
                         help="stop after this many attempts in a row that were not kept")
@@ -1071,6 +1248,7 @@ def parse_arguments(argv=None):
     options = parser.parse_args(argv)
     values = vars(options)
     values["out"] = os.path.abspath(values["out"] or os.path.join(DEFAULT_EXPERIMENTS_DIR, time.strftime("%Y-%m-%d_%H%M%S")))
+    values["devices"] = [device.strip() for device in values["devices"].split(",") if device.strip()]
     values["solver_model"] = resolve_model_id(values["solver_model"])
     values["solver_effort"] = resolve_effort(values["solver_effort"])
     for key in ("start", "scorer_config"):

@@ -314,6 +314,28 @@ check(meta["budget_stop"] and meta["submission_source"] == "final_message" and s
       and json.load(open(os.path.join(run.run_dir, "submission_sandbox_file.json"))) == SUBMISSION,
       "after the budget stop the final message is scored first, since the agent could not save a file")
 
+# which unit: REGF2 runs get grid A2's data, and a scorer config for the other device is refused
+def exits_with(function, *arguments):
+    try:
+        function(*arguments)
+    except SystemExit as stop:
+        return str(stop)
+    return None
+
+
+check(S.data_dir_for("clean").endswith(os.path.join("grid_A", "sandbox_data_clean")), "REGF1 (the default) gets grid A's data")
+regf2_data = str(S.DEVICE_SOLVER_DATA_DIRS["REGF2"]["clean"])
+check(regf2_data.endswith(os.path.join("grid_A2", "sandbox_data_clean"))
+      and (os.path.isdir(regf2_data) or "build_test_grids.py" in (exits_with(S.data_dir_for, "clean", "REGF2") or "")),
+      "REGF2 gets grid A2's data, or a pointer to the builder while A2 is not built")
+message = exits_with(S.check_scorer_config_device, os.path.join(REPOSITORY_ROOT, "scorer", "config_min.json"), "REGF2")
+check(message is not None and "holds REGF1" in message and "config_min_regf2.json" in message,
+      "a REGF1 scorer config is refused for a REGF2 run, naming the right one")
+check(exits_with(S.check_scorer_config_device, os.path.join(REPOSITORY_ROOT, "scorer", "config_rsi.json"), "REGF1") is None,
+      "a REGF1 config passes for a REGF1 run")
+check(S.parse_arguments(["haiku", "low", "--device", "REGF2"]).device == "REGF2" and S.parse_arguments(["haiku", "low"]).config is None,
+      "--device is an option, and --config defaults to the device's own config")
+
 # 10. a conversation too long for the model ends the agent's work; the sandbox's submission is scored
 class TooLong(Exception):
     status_code = 400

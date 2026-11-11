@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -507,6 +508,89 @@ check(not took, "a block of one pair is refused")
 # 7. the permutation test
 check(abs(R.permutation_p_value([1, 2], [3, 4]) - 1 / 6) < 1e-12 and R.permutation_p_value([3, 4], [1, 2]) == 1.0,
       "permutation p-values are exact for small blocks")
+
+# 8. the stratified test: relabelling only within a device
+check(R.stratified_permutation_p_value([([1, 2], [3, 4])]) == R.permutation_p_value([1, 2], [3, 4]),
+      "with one device the stratified test is the plain one")
+# the candidate is better on both devices, but device 2 scores far higher: pooling would drown the effect
+strata = [([0.1, 0.2], [0.3, 0.4]), ([1.1, 1.2], [1.3, 1.4])]
+check(abs(R.stratified_permutation_p_value(strata) - 1 / 36) < 1e-12
+      and R.stratified_permutation_p_value(strata) < R.permutation_p_value([0.1, 0.2, 1.1, 1.2], [0.3, 0.4, 1.3, 1.4]),
+      "relabelling within devices: the best of the 36 relabellings is the observed one (p = 1/36), below the pooled test's p")
+comparison = R.compare_strata({"REGF1": strata[0], "REGF2": strata[1]})
+check(abs(comparison["mean_candidate"] - 0.65) < 1e-12 and set(comparison["by_unit"]) == {"unit 1", "unit 2"}
+      and abs(comparison["by_unit"]["unit 2"]["mean_current"] - 1.35) < 1e-12 and "REGF2" not in json.dumps(comparison),
+      "the comparison pools the runs and gives each unit its own means, by the name the updater knows")
+big = [([0.1 * i for i in range(10)], [0.1 * i + 0.05 for i in range(10)])] * 2
+check(0 < R.stratified_permutation_p_value(big) < 1, "large blocks are estimated from random relabellings")
+
+# 9. what the diff changed, and where the report disagrees with it
+diff = ("--- a/method.md\n+++ b/method.md\n@@ -1,2 +1,2 @@\n-old line\n+new line\n+another\n"
+        "--- /dev/null\n+++ b/tools/screen.py\n@@ -0,0 +1,2 @@\n+a\n+b\n")
+check(R.diff_summary(diff) == "method.md +2 -1; tools/screen.py (new) +2 -0", "the diff's own count of each file's lines")
+harness = ["method.md", "system.md", "tools/check_submission.py", "tools/menu_options.json"]
+check(R.report_mismatches("No files changed. The current harness is already the best.", ["method.md"], harness)
+      == ["the report says nothing changed, but the diff changes method.md"], "run3's h006: 'no change' with a changed method.md")
+check(R.report_mismatches("Remove voltage_behind_reactance from menu_options.json.", ["method.md"], harness)
+      == ["the report's change names menu_options.json, which the diff does not touch"],
+      "run3's h004: the change names a harness file the diff never touches")
+check(R.report_mismatches("Added tools/closed_loop_check.py and a step in method.md.", ["method.md", "tools/closed_loop_check.py"],
+                          harness + ["tools/closed_loop_check.py"]) == [] and
+      R.report_mismatches("The solver retypes submission.json.", ["method.md"], harness) == [],
+      "a report that matches its diff, or names a file outside the harness, is not flagged")
+mismatch_client = FakeClient([reply(use("write_file", path="method.md", content=METHOD + "9. y\n"),
+                                    use("write_proposal", content="".join(f"## {key}\n{value}\n" for key, value in
+                                                                          dict(FINISH, change="No files changed.").items())),
+                                    use("finish")), reply(use("finish"))])
+mismatch_dir = os.path.join(work, "mismatch")
+R.start_experiment(settings("mismatch", iters=1), client=mismatch_client, launcher=FakeLauncher(), **FAST)
+record = read_lines(os.path.join(mismatch_dir, "history.jsonl"))[0]
+summary_text = open(os.path.join(mismatch_dir, "summary.md")).read()
+check(record["diff_summary"] == "method.md +2 -0" and "nothing changed" in record["report_mismatch"]
+      and "REPORT/DIFF MISMATCH" in summary_text and "[method.md +2 -0]" in summary_text,
+      "the loop records the diff's count and the mismatch, and summary.md shows both")
+
+# 10. two units: pairs take turns, each on its own data and grids, and the updater sees "unit 1" and "unit 2"
+regf2_ready = all(os.path.exists(os.path.join(str(path), "runs.json")) for path in R.DEVICE_SOLVER_DATA_DIRS["REGF2"].values()) \
+    and os.path.exists(os.path.join(REPOSITORY_ROOT, "test_cases", "grid_M2", "holdout", "case.json"))
+check(R.ExperimentSettings(iters=1, out="x", devices=["REGF1", "REGF2"], pairs=5).problems()
+      and R.ExperimentSettings(iters=1, out="x", devices=["REGF1", "REGF3"]).problems()
+      and not R.ExperimentSettings(iters=1, out="x", devices=["REGF1", "REGF2"]).problems(),
+      "two devices need every block count to be a multiple of two, and known devices")
+if regf2_ready:
+    two_launcher = FakeLauncher()
+    two_client = FakeClient(GOOD)
+    two_dir = os.path.join(work, "two_units")
+    two = settings("two_units", iters=1, devices=["REGF1", "REGF2"])
+    R.start_experiment(two, client=two_client, launcher=two_launcher, **FAST)
+    baseline = runs_in(two_dir, "h000_baseline")
+    test_runs = runs_in(two_dir, "h001_test")
+    check(sorted((int(run.labels["pair"]), run.device) for run in baseline) == [(1, "REGF1"), (2, "REGF2"), (3, "REGF1"), (4, "REGF2")]
+          and all(run.device == two.device_for(int(run.labels["pair"])) for run in test_runs),
+          "baseline runs and pairs take turns between the devices")
+    captured, original_process = [], R.LaunchedSolverProcess
+    R.LaunchedSolverProcess = lambda command, log_path: captured.append(command)
+    try:
+        for device in two.devices:
+            R.SolverLauncher(two).start_new("b", {"device": device, "pair": 1}, "h", "l")
+    finally:
+        R.LaunchedSolverProcess = original_process
+    check(all(command[command.index("--device") + 1] == device and command[command.index("--config") + 1] == two.config_for(device)
+              for command, device in zip(captured, two.devices))
+          and captured[1][captured[1].index("--config") + 1].endswith("config_rsi_regf2.json"),
+          "each run is started with its device and that device's scorer config")
+    record = read_lines(os.path.join(two_dir, "history.jsonl"))[0]
+    blocks_two = read_lines(os.path.join(two_dir, "blocks.jsonl"))
+    check(set(record["by_unit"]) == {"unit 1", "unit 2"} and set(blocks_two[0]["mean_current_by_device"]) == {"REGF1", "REGF2"}
+          and "B by unit" in open(os.path.join(two_dir, "summary.md")).read(),
+          "the history has each unit's means, and summary.md a column for them")
+    first_request = two_client.requests[0]
+    user_text = "\n".join(block.get("text", "") for block in first_request["messages"][0]["content"] if block.get("type") == "text")
+    check("| unit |" in user_text and "unit 2" in user_text and "take turns between two different units" in first_request["system"]
+          and "A2_vref_op1" in user_text and not re.search(r"REGF", first_request["system"] + user_text),
+          "the updater's table has a unit column, part 1 shows unit 2's runs.json, and no device name reaches it")
+else:
+    print("skipped: the two-unit loop needs grids A2, B2 and M2 built (test_cases/README.md)")
 
 shutil.rmtree(work, ignore_errors=True)
 print(f"\nall {passed} checks passed")

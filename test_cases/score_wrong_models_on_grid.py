@@ -23,6 +23,12 @@ WRONG_VERSIONS = {
     "REGF1": [("truth", "full", None), ("flat", None, None), ("ideal_loop", "ideal", None),
               ("wdrp_x0.8", "full", {"wdrp": 0.8}), ("Qdrp_x0.8", "full", {"Qdrp": 0.8}),
               ("Tpm_x2", "full", {"Tpm": 2.0}), ("KPv_x0.7", "full", {"KPv": 0.7})],
+    # REGF2 adds its VSM lag (mf) and PLL damping (dd); "REGF1_law" shrinks the lag to under 1 ms, which is
+    # REGF1's droop law: what a solver that fits the droop structure to a VSM unit would submit at best
+    "REGF2": [("truth", "full", None), ("flat", None, None), ("ideal_loop", "ideal", None),
+              ("wdrp_x0.8", "full", {"wdrp": 0.8}), ("Qdrp_x0.8", "full", {"Qdrp": 0.8}),
+              ("KPv_x0.7", "full", {"KPv": 0.7}), ("mf_x0.5", "full", {"mf": 0.5}), ("mf_x2", "full", {"mf": 2.0}),
+              ("REGF1_law", "full", {"mf": 0.001, "dd": 0.0})],
 }
 KEPT_FIELDS = ("score", "td", "fr", "par", "td_runs", "failures")
 

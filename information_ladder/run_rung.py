@@ -37,7 +37,9 @@ def use_rung_data(data_dir):
     """Point solver_run at the rung's data folder (it otherwise picks grid A's folder from --noise)."""
     original_data_dir_for = solver_run.data_dir_for
 
-    def rung_data_dir(noise):
+    def rung_data_dir(noise, device="REGF1"):
+        if device != "REGF1":
+            sys.exit("the ladder's rungs are built from grid A, so they are REGF1 only")
         original_data_dir_for(noise)                 # the usual checks on the standard folder
         noise_levels = solver_run.read_json(os.path.join(data_dir, "dataset.json"))["measurement_noise_std"].values()
         if noise != "clean" or any(noise_levels):

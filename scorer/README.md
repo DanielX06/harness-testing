@@ -64,7 +64,7 @@ $PY scorer/rescore_runs.py results/<study>/<batch>/2*/ --reason "why"    # finis
 
 From Python, `SubmissionScorer(config_path, worker_count).score(path)` returns a report with `.public` and `.private`, and `write_score_files(report, folder)` writes them. A script that uses it must keep its top level under `if __name__ == "__main__":`: on macOS the ANDES worker processes are spawned, and spawned processes re-import the main script.
 
-Which device a grid holds is a setting of the grid (its answer key's `device`), and the truth model the scorer compares with comes from `truth/__init__.py`'s `TRUTH_SPEC_BUILDERS` for that name. Only REGF1 is there today.
+Which device a grid holds is a setting of the grid (its answer key's `device`), and the truth model the scorer compares with comes from `truth/__init__.py`'s `TRUTH_SPEC_BUILDERS` for that name: REGF1 (grids A, B, M) and, since Nov 10, REGF2 (grids A2, B2, M2).
 
 ## Test results on the minimum test cases (config_min.json, Oct 10)
 
@@ -113,6 +113,9 @@ Before scoring I reproduced your `test_1` and `train_3` CSVs with my ANDES insta
 | `config_min.json` | minimum test cases: grid B as the selection grid, grid A's two held-out runs as a private same-grid diagnostic |
 | `config_rsi.json` | for RSI runs and anything compared with them: `config_min.json` plus grid M as a hidden monitor (role `monitor`, private, never used to accept). Built and checked in `../test_cases` (grid M section of its README) |
 | `truth/regf1_as_submission.py` | REGF1 as a submission (full and ideal current loop, and deliberately wrong versions) |
+| `truth/regf2_as_submission.py` | REGF2 as a submission: REGF1's spec with the VSM lag and the PLL2 that ANDES adds |
+| `config_min_regf2.json`, `config_rsi_regf2.json` | the same as `config_min.json` and `config_rsi.json` on the REGF2 grids B2, M2 and A2 |
+| `tests/test_truth_specs.py` | the truth specs at rest, and REGF2 against REGF1 at DC (no ANDES) |
 | `truth/__init__.py` | which truth model goes with which device name |
 | `baselines/flat.json` | floor baseline |
 | `tests/test_scorer.py` | the closed-loop checks above (needs ANDES) |

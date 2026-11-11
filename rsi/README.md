@@ -23,6 +23,7 @@ $PY rsi/rsi_experiment.py --iters 2 --baseline-runs 4 --pairs 4 --early-stop-pai
 $PY rsi/rsi_experiment.py --iters 30                                                                    # the real thing
 $PY rsi/rsi_experiment.py --iters 40 --parallel 4 --updater-model claude-sonnet-5-5 --updater-effort low --out rsi_loops/<date>_<name>   # Sonnet as updater, as in run2
 $PY rsi/rsi_experiment.py --iters 30 --no-updater-python --updater-max-turns 20                        # the updater as in run1 and run2 (no sandbox), for an ablation
+$PY rsi/rsi_experiment.py --iters 10 --devices REGF1,REGF2 --start harnesses/wecc_docs/harness ...      # pairs take turns between two units (run4)
 ```
 
 `--solver-model` and `--solver-effort` take the short names (`opus`, `high`) or numbers, as `solver_run.py` does. `--updater-model` needs the full model id.
@@ -82,6 +83,10 @@ The loop copies the starting harness (`--start`, default `harnesses/v0/harness`)
 2. Test block. Pairs of fresh runs, one of the candidate and one of the current harness in each pair, started together; which one starts first alternates. After `--early-stop-pairs` (8) pairs, a candidate whose mean composite on grid B is not below the current harness's is rejected early. Otherwise, after `--pairs` (20) pairs, it passes if its mean is lower and a one-sided permutation test on this block's 20 + 20 runs gives p ≤ `--alpha` (0.10).
 3. Confirmation block. A candidate that passed gets `--confirm-pairs` (20) new pairs, run and judged the same way, the early stop included, on their own. Passing both makes it the current harness; failing this one reverts it.
 4. Stop after `--iters` iterations, after `--patience` (20) attempts in a row that were not kept, or once `--max-usd` (20) has been spent, checked before each iteration. Budgets are in USD, the currency of the per-token prices in `common/api_pricing.py`.
+
+Two units (Nov 10). With `--devices REGF1,REGF2`, pair 1 runs on REGF1, pair 2 on REGF2, and so on, baseline runs included, each on its own training grid (A, A2) and scored on its own grids: `--config` for the first device, the other device's `config_rsi` from `common/project_paths.py` (`config_rsi_regf2.json`). The early stop and the accept rule use the mean over all runs, and the permutation test relabels runs only within a device, so a difference in how hard the two units are cannot pass for a difference between the harnesses. Every block count must then be even. The updater sees "unit 1" and "unit 2", never the device names: a unit column in its run table, each unit's runs.json in part 1, each unit's means in the history, unit 2's recordings in `unit2/` in its sandbox, and a paragraph in its instructions saying the runs take turns. `summary.md` adds each unit's means, and `monitor.jsonl` each device's monitor numbers.
+
+What changed, from the diff. The change column of `summary.md` and the history start with the diff's own count of what changed (`diff_summary`, e.g. `method.md +3 -1`), and `report_mismatch` flags an updater description that disagrees with its diff: it says nothing changed while files changed (run3's h006), or its change names a harness file the diff never touches (run3's h004, which named `menu_options.json`).
 
 Each block compares the candidate with runs of the current harness made in the same block, not with older runs. Over the days a loop takes, the solver's behavior can drift (API changes, load, a new Docker image), and a candidate measured against last week's runs would be credited or blamed for the drift. Every block also gives the current harness new runs, so each updater reads fresh evidence rather than the same 20 transcripts. Because the two blocks share no runs, a candidate no better than the current harness passes both with probability α² (1% at 0.10). The early stop can only reject, so it cannot raise that.
 
@@ -182,6 +187,9 @@ One leak is built into the Oct 17 decision. Because the composite and TD are bot
 | `fail_rate_candidate`, `fail_rate_current` | loop | the share of runs in which each disturbance failed |
 | `note` | loop | why a candidate was never run (for a duplicate, the harness it repeats and that harness's outcome) |
 | `diff_excerpt` | loop | the diff against the parent, of which the first 1500 characters are shown |
+| `diff_summary` | loop | the diff's own count of lines added and removed per file |
+| `report_mismatch` | loop | where the updater's description of its change disagrees with the diff, if it does |
+| `by_unit` | loop | with two units, each unit's `n_candidate`, `n_current`, `mean_candidate` and `mean_current` |
 
 A kept candidate's test-block numbers stay out of the history (they are in `blocks.jsonl`). They are the numbers that got it selected, so they flatter it; the confirmation block's are an honest estimate. Only selection-grid numbers may go into the loop's fields. The build scans them for hidden names, but it can't tell whether a mean came from the right grid, so the loop's own code has to get that right.
 

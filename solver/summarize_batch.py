@@ -43,7 +43,9 @@ def summarize(batch_dir):
 
     for meta in runs:
         components = meta.get("components", {})
-        grid_b, grid_a, grid_m = components.get("grid_B", {}), components.get("grid_A", {}), components.get("grid_M", {})
+        # grid_B, grid_A, grid_M for REGF1 runs; grid_B2, grid_A2, grid_M2 for REGF2 runs
+        grid_b, grid_a, grid_m = (next((value for name, value in components.items() if name in (key, key + "2")), {})
+                                  for key in ("grid_B", "grid_A", "grid_M"))
         selection = meta.get("score_selection")
         if selection is not None:
             selection_scores.append(selection)

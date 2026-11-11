@@ -44,7 +44,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 from common.api_pricing import price_for  # noqa: E402
 from common.harness_files import copy_harness, harness_content_fingerprint, harness_fingerprint, list_harness_files  # noqa: E402
 from common.hidden_names import SIMULATOR_AND_DEVICE_NAMES  # noqa: E402
-from common.project_paths import RSI_SCORER_CONFIG, SOLVER_DATA_DIRS, SUBMISSION_PARSER_FILE, TASK_PROMPT_FILE  # noqa: E402
+from common.project_paths import DEVICE_SOLVER_DATA_DIRS, RSI_SCORER_CONFIG, SUBMISSION_PARSER_FILE, TASK_PROMPT_FILE  # noqa: E402
 from rsi.updater_context import UpdaterContextBuilder, find_run_folders, hidden_score_names_pattern, read_history  # noqa: E402
 from rsi.updater_sandbox import UpdaterSandbox, sandbox_unavailable  # noqa: E402
 from solver.python_sandbox import DOCKER_EXECUTABLE, TIMEOUT_EXIT_CODE, DockerPythonSandbox, LocalPythonSandbox  # noqa: E402
@@ -292,17 +292,26 @@ def best_scored_submission(run_paths):
     return best[1] if best else None
 
 
-def validation_files(noise):
-    with open(os.path.join(SOLVER_DATA_DIRS[noise], "runs.json")) as file:
+def run_data_dir(run_dir, noise):
+    """The recordings the solver of this run had: its device's training data (grid A for REGF1, A2 for REGF2)."""
+    with open(os.path.join(run_dir, "meta.json")) as file:
+        meta = json.load(file)
+    device = (meta.get("labels") or {}).get("device") or meta.get("device") or "REGF1"
+    return DEVICE_SOLVER_DATA_DIRS[device][noise]
+
+
+def validation_files(noise, data_dir=None):
+    with open(os.path.join(data_dir or DEVICE_SOLVER_DATA_DIRS["REGF1"][noise], "runs.json")) as file:
         runs = json.load(file)
     return sorted(run["file"] for run in runs.values() if run["split"] == "val")
 
 
-def run_candidate_checker(workspace, noise, jobs, scratch_parent, mode="docker", python=None):
-    """Run the candidate's tools/check_submission.py the way the solver would, once per job.
+def run_candidate_checker(workspace, noise, jobs, scratch_parent, mode="docker", python=None, data_dir=None):
+    """Run the candidate's tools/check_submission.py the way the solver would, once per job, on data_dir's
+    recordings (default: grid A's for this noise setting).
     jobs: (label, submission file or None for an empty submission, csv relative path or None).
     Returns [{label, cmd, exit, seconds, output}]."""
-    data_dir = SOLVER_DATA_DIRS[noise]
+    data_dir = data_dir or DEVICE_SOLVER_DATA_DIRS["REGF1"][noise]
     folder = os.path.join(scratch_parent, f".checker_{uuid.uuid4().hex[:8]}")   # under the repo, so Docker Desktop can mount it
     log = []
     try:
@@ -345,11 +354,14 @@ def smoke_problems(workspace, run_paths, noise, scratch_parent, mode="docker", p
     skipped = checker_unavailable(mode)
     if skipped:
         return [], [skipped], []
-    reference, validation = best_scored_submission(run_paths), validation_files(noise)
+    reference = best_scored_submission(run_paths)
+    data_dir = run_data_dir(os.path.dirname(reference), noise) if reference else None
+    validation = validation_files(noise, data_dir)
     if not reference or not validation:
         return [], ["smoke run skipped: no scored submission or no validation file"], []
     log = run_candidate_checker(workspace, noise, [("best submission", reference, validation[0]),
-                                                   ("empty submission", None, None)], scratch_parent, mode, python)
+                                                   ("empty submission", None, None)], scratch_parent, mode, python,
+                                data_dir=data_dir)
     errors = []
     for entry, should_pass in zip(log, (True, False)):
         if entry["exit"] == TIMEOUT_EXIT_CODE:
@@ -366,16 +378,19 @@ def self_test_message(workspace, run_paths, context, scratch_parent, mode="docke
     (None, []) if it cannot run."""
     if checker_unavailable(mode):
         return None, []
-    validation = validation_files(context.stats["noise"])
-    jobs = []
-    for which in ("best", "worst"):
+    noise, log = context.stats["noise"], []
+    for which in ("best", "worst"):      # each on a validation file of the unit its solver had
         run_id = context.stats[which]
         run_dir = next((folder for folder in find_run_folders(run_paths) if os.path.basename(folder).endswith("_" + run_id)), None)
-        if run_dir and os.path.exists(os.path.join(run_dir, "submission.json")) and validation:
-            jobs.append((f"{which} run {run_id}", os.path.join(run_dir, "submission.json"), validation[0]))
-    if not jobs:
+        if not run_dir or not os.path.exists(os.path.join(run_dir, "submission.json")):
+            continue
+        data_dir = run_data_dir(run_dir, noise)
+        validation = validation_files(noise, data_dir)
+        if validation:
+            log += run_candidate_checker(workspace, noise, [(f"{which} run {run_id}", os.path.join(run_dir, "submission.json"),
+                                                             validation[0])], scratch_parent, mode, python, data_dir=data_dir)
+    if not log:
         return None, []
-    log = run_candidate_checker(workspace, context.stats["noise"], jobs, scratch_parent, mode, python)
     parts = ["Not submitted yet. Before you submit, here is your harness's checker on two real submissions from "
              "the runs above, run the way the solver will run it. Check that what your tools tell the solver is "
              "right for both: the best run's model is the best this harness has produced."]
@@ -592,7 +607,8 @@ def propose_candidate(run_paths, harness_dir, out_dir, scope="tools", history=No
     if no_sandbox is None:
         sandbox = UpdaterSandbox.create(out_dir, os.path.join(workspace.folder, "tools"), context.stats["noise"],
                                         context.stats["runs_in_table"], run_paths,
-                                        hidden_score_names_pattern(scorer_config), smoke, smoke_python)
+                                        hidden_score_names_pattern(scorer_config), smoke, smoke_python,
+                                        units=context.stats["units"])
     session = HarnessUpdaterSession(context, workspace, client, model, effort, max_turns, max_usd, run_paths, out_dir,
                                     smoke, smoke_python, self_test, sandbox)
     started = time.monotonic()

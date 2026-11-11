@@ -4,8 +4,9 @@ The scorer picks the builder by the "device" field of a grid's answer key, so ad
 REGF3) means adding a module here and one line to TRUTH_SPEC_BUILDERS.
 """
 from scorer.truth.regf1_as_submission import regf1_truth_spec
+from scorer.truth.regf2_as_submission import regf2_truth_spec
 
-TRUTH_SPEC_BUILDERS = {"REGF1": regf1_truth_spec}
+TRUTH_SPEC_BUILDERS = {"REGF1": regf1_truth_spec, "REGF2": regf2_truth_spec}
 
 
 def truth_spec_for(device_model, params_used, rating_mva):

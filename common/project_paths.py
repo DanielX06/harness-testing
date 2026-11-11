@@ -38,3 +38,16 @@ SOLVER_DATA_DIRS = {
     "noisy": TEST_CASES_DIR / "grid_A" / "sandbox_data",
     "clean": TEST_CASES_DIR / "grid_A" / "sandbox_data_clean",
 }
+# each device's training grid as the solver receives it: REGF1's is grid A (above), REGF2's grid A2
+DEVICE_SOLVER_DATA_DIRS = {
+    "REGF1": SOLVER_DATA_DIRS,
+    "REGF2": {"noisy": TEST_CASES_DIR / "grid_A2" / "sandbox_data", "clean": TEST_CASES_DIR / "grid_A2" / "sandbox_data_clean"},
+}
+# the scorer configs for each device's held-out grids: "min" (selection grid and the same-grid diagnostic), "rsi" (plus
+# the hidden monitor); solver_run.py checks that a config's grids hold the device the run is for
+DEVICE_SCORER_CONFIGS = {
+    "REGF1": {"min": MIN_SCORER_CONFIG, "rsi": RSI_SCORER_CONFIG},
+    "REGF2": {"min": SCORER_DIR / "config_min_regf2.json", "rsi": SCORER_DIR / "config_rsi_regf2.json"},
+}
+# what the updater calls each device: the device names themselves are hidden (common/hidden_names.py)
+UNIT_LABELS = {"REGF1": "unit 1", "REGF2": "unit 2"}

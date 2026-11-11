@@ -23,8 +23,9 @@ import uuid
 
 from common.harness_files import IGNORE_NON_CONTENT
 from common.hidden_names import remove_hidden_device_names
-from common.project_paths import SOLVER_DATA_DIRS, SUBMISSION_PARSER_FILE
-from rsi.updater_context import UPDATER_OUTPUT_CHARS, check_generated_text, find_run_folders, load_run_summary
+from common.project_paths import SUBMISSION_PARSER_FILE
+from rsi.updater_context import (UPDATER_OUTPUT_CHARS, check_generated_text, find_run_folders, load_run_summary,
+                                 unit_data_dir, unit_folder)
 from solver.python_sandbox import DOCKER_EXECUTABLE, DockerPythonSandbox, LocalPythonSandbox, fill_sandbox_folder
 
 SUBMISSIONS_FOLDER = "submissions"
@@ -59,9 +60,9 @@ def write_submissions(folder, run_ids, run_paths, hidden_pattern):
                 file.write(text)
             written += 1
         if not summary["scored"]:
-            scores[run_id] = {"scored": False}
+            scores[run_id] = {"scored": False, "unit": summary["unit"]}
             continue
-        scores[run_id] = {"composite": summary["composite"], "td": summary["td"],
+        scores[run_id] = {"unit": summary["unit"], "composite": summary["composite"], "td": summary["td"],
                           "td_by_disturbance": summary["td_runs"], "failures": summary["failures"],
                           "submission_file": f"{run_id}.json" if os.path.exists(submission) else None}
     text = json.dumps(scores, indent=1)
@@ -78,10 +79,20 @@ class UpdaterSandbox:
 
     @classmethod
     def create(cls, scratch_parent, workspace_tools_dir, noise, run_ids, run_paths, hidden_pattern, mode="docker",
-               python=None):
-        """A new sandbox under scratch_parent. mode is "docker" or "local" (sandbox_unavailable says when neither)."""
+               python=None, units=("unit 1",)):
+        """A new sandbox under scratch_parent. mode is "docker" or "local" (sandbox_unavailable says when neither).
+        units: the units the runs take turns on; the first one's recordings fill the top of the folder, as in a
+        solver's sandbox, and each other unit's go in unit2/ and so on."""
         folder = os.path.join(os.path.abspath(scratch_parent), SANDBOX_PREFIX + uuid.uuid4().hex[:8])
-        fill_sandbox_folder(folder, SOLVER_DATA_DIRS[noise], workspace_tools_dir, SUBMISSION_PARSER_FILE)
+        units = sorted(units)
+        fill_sandbox_folder(folder, unit_data_dir(units[0], noise), workspace_tools_dir, SUBMISSION_PARSER_FILE)
+        for unit in units[1:]:
+            source, target = unit_data_dir(unit, noise), os.path.join(folder, unit_folder(unit))
+            os.makedirs(target)
+            for name in ("train", "val"):
+                shutil.copytree(os.path.join(source, name), os.path.join(target, name), ignore=IGNORE_NON_CONTENT)
+            for name in ("runs.json", "dataset.json"):
+                shutil.copy(os.path.join(source, name), os.path.join(target, name))
         try:
             write_submissions(os.path.join(folder, SUBMISSIONS_FOLDER), run_ids, run_paths, hidden_pattern)
         except Exception:

@@ -308,7 +308,7 @@ check("run_python" in {tool["name"] for tool in client.requests[0]["tools"]} and
 check(all(f"'{name}'" in listing for name in ("train", "val", "runs.json", "dataset.json", "submissions", "tools"))
       and "'closed_loop_check.py'" in listing and "'submission_parser.py'" in listing,
       "the sandbox holds the solver's data, and tools/ already has the tool written a moment before")
-check("runs 10 files 10" in listing and "keys ['composite', 'failures', 'submission_file', 'td', 'td_by_disturbance']" in listing,
+check("runs 10 files 10" in listing and "keys ['composite', 'failures', 'submission_file', 'td', 'td_by_disturbance', 'unit']" in listing,
       "submissions/ holds the ten runs' submissions, and scores.json only what part 2 shows (no FR or PAR)")
 check("checked x.json 1" in listing, "a tool runs in the sandbox as the solver would run it")
 third = client.requests[3]["messages"][-1]["content"][0]["content"]

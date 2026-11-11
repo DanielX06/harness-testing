@@ -58,8 +58,9 @@ from dataclasses import asdict, dataclass, field
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the repository root
 from common import api_pricing  # noqa: E402
 from common.harness_files import harness_fingerprint  # noqa: E402
-from common.project_paths import (DEFAULT_RUNS_DIR, MIN_SCORER_CONFIG, SCORER_SCRIPT, SOLVER_DATA_DIRS,  # noqa: E402
-                                  STARTING_HARNESS_DIR, SUBMISSION_PARSER_FILE, TASK_PROMPT_FILE)
+from common.project_paths import (DEFAULT_RUNS_DIR, DEVICE_SCORER_CONFIGS, DEVICE_SOLVER_DATA_DIRS,  # noqa: E402
+                                  MIN_SCORER_CONFIG, SCORER_SCRIPT, STARTING_HARNESS_DIR, SUBMISSION_PARSER_FILE,
+                                  TASK_PROMPT_FILE)
 from common.run_provenance import docker_image_id, git_commit  # noqa: E402
 from scorer.submission_parser import SubmissionError, TerminalModel  # noqa: E402
 from solver.python_sandbox import DOCKER_EXECUTABLE, SANDBOX_IMAGE, DockerPythonSandbox  # noqa: E402
@@ -161,11 +162,14 @@ def task_prompt(noise):
     return template.replace("{{NOISE}}", NOISE_SENTENCES[noise])
 
 
-def data_dir_for(noise):
-    """Grid A's recordings for this noise setting, after checking dataset.json agrees with what the prompt will say."""
-    data_dir = str(SOLVER_DATA_DIRS[noise])
+def data_dir_for(noise, device="REGF1"):
+    """The device's training recordings (grid A for REGF1, grid A2 for REGF2) for this noise setting, after checking
+    dataset.json agrees with what the prompt will say."""
+    if device not in DEVICE_SOLVER_DATA_DIRS:
+        sys.exit(f"no training grid for device {device!r} (have {sorted(DEVICE_SOLVER_DATA_DIRS)})")
+    data_dir = str(DEVICE_SOLVER_DATA_DIRS[device][noise])
     if not os.path.isdir(data_dir):
-        sys.exit(f"{data_dir} is missing; build it with test_cases/make_noise_free_sandbox.py")
+        sys.exit(f"{data_dir} is missing; build it with test_cases/build_test_grids.py and test_cases/make_noise_free_sandbox.py")
     noise_levels = read_json(os.path.join(data_dir, "dataset.json"))["measurement_noise_std"].values()
     if any(noise_levels) != (noise == "noisy"):
         sys.exit(f"noise levels in {data_dir}/dataset.json don't match --noise {noise}")
@@ -225,6 +229,19 @@ def extract_submission(final_text, sandbox_dir, budget_stop=False):
     return None, "none", notes, candidates
 
 
+def check_scorer_config_device(scorer_config, device):
+    """Stop unless every grid the scorer config scores holds the device this run identifies."""
+    config = read_json(scorer_config)
+    for grid in config["grids"]:
+        answer_key_path = os.path.join(os.path.dirname(os.path.abspath(scorer_config)), grid["path"], "holdout", "answer_key.json")
+        if not os.path.exists(answer_key_path):
+            sys.exit(f"{answer_key_path} is missing; build {grid['name']} with test_cases/build_test_grids.py")
+        grid_device = read_json(answer_key_path)["device"]
+        if grid_device != device:
+            sys.exit(f"{scorer_config} scores {grid['name']}, which holds {grid_device}, but this run is for {device}; "
+                     f"use {DEVICE_SCORER_CONFIGS.get(device, {}).get('min', 'a config for that device')}")
+
+
 @dataclass
 class SolverSettings:
     model_id: str
@@ -234,6 +251,7 @@ class SolverSettings:
     scorer_config: str | None = str(MIN_SCORER_CONFIG)   # None: don't score
     scoring_workers: int | None = None
     labels: dict = field(default_factory=dict)          # free-form tags, such as the RSI loop's block and arm
+    device: str = "REGF1"                               # which unit's recordings the solver gets (never told to it)
 
 
 @dataclass
@@ -274,7 +292,9 @@ class SolverRun:
         for required in ("system.md", "method.md", "tools"):
             if not os.path.exists(os.path.join(settings.harness_dir, required)):
                 sys.exit(f"{settings.harness_dir} has no {required}; a harness needs system.md, method.md and tools/")
-        data_dir = data_dir_for(settings.noise)
+        data_dir = data_dir_for(settings.noise, settings.device)
+        if settings.scorer_config:
+            check_scorer_config_device(settings.scorer_config, settings.device)
         tag = f"{time.strftime('%Y%m%d_%H%M%S')}_{settings.model_id.split('-')[1]}_{settings.effort}_{uuid.uuid4().hex[:4]}"
         run_dir = os.path.join(os.path.abspath(runs_dir), tag)
         os.makedirs(run_dir)
@@ -295,7 +315,7 @@ class SolverRun:
                 "harness_sha": harness_fingerprint(settings.harness_dir), "spent_usd": 0.0, "steps": 0, "tool_calls": 0,
                 "tool_timeouts": 0, "budget_stop": False, "agent_seconds": 0.0, "submission_source": None,
                 "final_message_differs": None, "submission_rejected": {},
-                "data": data_dir, "noise": settings.noise, "config": settings.scorer_config,
+                "data": data_dir, "device": settings.device, "noise": settings.noise, "config": settings.scorer_config,
                 "status": "running", "error": None, "stop_reason": None, "api_retries": 0, "resumes": 0, "failures": 0,
                 "labels": settings.labels, "git_commit": git_commit(),
                 "docker_image": docker_image_id(DOCKER_EXECUTABLE, SANDBOX_IMAGE),
@@ -561,10 +581,13 @@ def parse_arguments(argv=None):
     parser.add_argument("effort", nargs="?", help="1-5, or low, medium, high, xhigh, max")
     parser.add_argument("--harness", default=str(STARTING_HARNESS_DIR), help="folder with system.md, method.md, tools/")
     parser.add_argument("--out", default=str(DEFAULT_RUNS_DIR), help="parent folder for this run's folder")
-    parser.add_argument("--config", default=str(MIN_SCORER_CONFIG),
-                        help="scorer config; scorer/config_rsi.json adds the hidden monitor grid M")
+    parser.add_argument("--config", default=None,
+                        help="scorer config (default: the device's config_min); scorer/config_rsi.json adds the hidden "
+                             "monitor grid M, scorer/config_rsi_regf2.json is the same for REGF2")
     parser.add_argument("--no-score", action="store_true")
     parser.add_argument("--workers", type=int, default=None, help="ANDES simulations at once when scoring")
+    parser.add_argument("--device", choices=sorted(DEVICE_SOLVER_DATA_DIRS), default="REGF1",
+                        help="the unit to identify: REGF1 (grid A's data, default) or REGF2 (grid A2's)")
     parser.add_argument("--noise", choices=["noisy", "clean"], default="noisy",
                         help="grid A data with PMU-grade noise (default) or noise-free; also sets the prompt's noise sentence")
     parser.add_argument("--label", action="append", default=[], metavar="KEY=VALUE", help="a tag stored in meta.json")
@@ -589,8 +612,10 @@ def main(argv=None):
         settings = SolverSettings(model_id=api_pricing.resolve_model_id(options.model),
                                   effort=api_pricing.resolve_effort(options.effort),
                                   harness_dir=os.path.abspath(options.harness), noise=options.noise,
-                                  scorer_config=None if options.no_score else os.path.abspath(options.config),
-                                  scoring_workers=options.workers, labels=parse_labels(options.label))
+                                  scorer_config=None if options.no_score else os.path.abspath(
+                                      options.config or DEVICE_SCORER_CONFIGS[options.device]["min"]),
+                                  scoring_workers=options.workers, labels=parse_labels(options.label),
+                                  device=options.device)
         run = SolverRun.start(settings, options.out)
     return 0 if run.execute() == "finished" else 1
 

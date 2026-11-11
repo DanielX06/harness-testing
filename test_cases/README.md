@@ -1,6 +1,6 @@
 # Test cases: grid A (training), grid B (selection) and grid M (hidden monitor)
 
-Grid A is what the agent learns from: Kundur's two-area system with the device in generator 3's slot, recorded the way an operator would have it. Grid B is the selection grid. It's the same machines re-arranged, the agent never sees it, and its score is the one that goes to `public.json` for the updater. Grid M is the hidden monitor for RSI runs: re-arranged another way, scored privately on every run, and never used to select anything, so it can show whether gains on B carry over to a grid nobody tuned on. The same device (REGF1 with the parameters from the medium Kundur case) sits in all three. Test grids C, D and E come later. The builder already takes any Kundur-family layout, and a different base network needs one more builder file.
+Grid A is what the agent learns from: Kundur's two-area system with the device in generator 3's slot, recorded the way an operator would have it. Grid B is the selection grid. It's the same machines re-arranged, the agent never sees it, and its score is the one that goes to `public.json` for the updater. Grid M is the hidden monitor for RSI runs: re-arranged another way, scored privately on every run, and never used to select anything, so it can show whether gains on B carry over to a grid nobody tuned on. The same device (REGF1 with the parameters from the medium Kundur case) sits in all three. Grids A2, B2 and M2 are the same three grids with a REGF2 unit (a virtual synchronous machine) in the slot instead; see the REGF2 section below. Test grids C, D and E come later. The builder already takes any Kundur-family layout, and a different base network needs one more builder file.
 
 ```bash
 cd "Fall DRA/Harness_testing"
@@ -13,7 +13,7 @@ $PY test_cases/score_wrong_models_on_grid.py M         # truth and deliberately 
 
 Each grid is defined in `grid_specs/grid_<X>.json`: its purpose, the case (the device's slot, the network changes, the operating points and every run's events, including the ambient load sequence's seed), the device under test (model, rating and ANDES parameters), the operator's description of each operating point for a grid with training runs, and design notes on why the grid is the way it is. `build_test_grids.py` writes the case unchanged to `grid_<X>/holdout/case.json`, and the scorer rebuilds every held-out run from that file with `scorer/grids/kundur_family_builder.py`, the same code that simulated it, so a held-out run is replayed with exactly the events that produced its recording.
 
-The device is a setting of the grid spec, not of the code. Putting REGF2 or REGF3 in a grid takes four things: its recording variables (P, Q and the limiters that must not bind) in `DEVICE_RECORDING_VARIABLES` in `build_test_grids.py`, its voltage-setpoint variable in `VOLTAGE_SETPOINT_VARIABLE` in the grid builder, a truth model in `scorer/truth/` (one module and one line in `TRUTH_SPEC_BUILDERS`), and its wrong versions in `score_wrong_models_on_grid.py`. Then the spec's `device_under_test` names it.
+The device is a setting of the grid spec, not of the code. Putting a new device in a grid (REGF2 has been done this way; REGF3 would be next) takes four things: its recording variables (P, Q and the limiters that must not bind) in `DEVICE_RECORDING_VARIABLES` in `build_test_grids.py`, its voltage-setpoint variable in `VOLTAGE_SETPOINT_VARIABLE` in the grid builder, a truth model in `scorer/truth/` (one module and one line in `TRUTH_SPEC_BUILDERS`), and its wrong versions in `score_wrong_models_on_grid.py`. Then the spec's `device_under_test` names it.
 
 ## Grid A: what the agent gets
 
@@ -116,6 +116,44 @@ Score of deliberately wrong versions of the true device (composite; flat = 1, tr
 | KPv × 0.7 | 0.53 (B_line at the cap) | 1.04 (M_vref and M_line at the cap, M_load's Q too) |
 
 On the P side, droop, filter and current-loop errors cost M almost exactly what they cost B, run for run. M's Q channel charges more for the same errors because M's Q swings are smaller (the TD divides by them), which puts the composite 15 to 25% higher. The one real difference is the voltage-loop gain. M's 0.9 Hz mode is less damped than B's (0.056 against B's 0.098 for its 0.89 Hz mode), so a 30% low KPv saturates two of M's runs where it saturates one of B's. Grid A's held-out runs saturate as well (1.13), so it is B that forgives this error, not M that is extreme. For a monitor that is useful: a B-tuned harness that drifts toward a wrong voltage-loop gain would pass B and show up on M. Per-run numbers are in `monitor_check.json` (`score_wrong_models_on_grid.py M` regenerates it). How the 22 calibration runs score on M is in `../analyses/monitor_grid/results.md`.
+
+## Grids A2, B2 and M2: the REGF2 unit (Nov 10)
+
+The second device for RSI run4, which alternates between the two units so a harness that writes one unit's facts into its method shows up on the other. Each spec (`grid_specs/grid_A2.json` and so on) is grid A, B or M unchanged (network, operating points, events, ambient seeds) with the runs renamed `A2_*`, `B2_*`, `M2_*` and the device replaced:
+
+| | REGF1 (A, B, M) | REGF2 (A2, B2, M2) |
+|---|---|---|
+| frequency law | droop: dw = w0*wdrp*(PIplim - Psen) | VSM: a lag with Tint = mf*wdrp, plus PLL damping dd*wdrp |
+| wdrp, Qdrp (converter base) | 0.0357, 0.0388 | 0.0332, 0.0572 |
+| Tpm, KPplim, KIplim, Tr | 0.0181, 3.55, 35.6, 0.0062 | 0.0197, 6.35, 26.6, 0.0048 |
+| KPv, mf, dd | 6, -, - | 6, 27 (Tint 0.0997 s), 0.11 |
+| PLL | none | PLL2 added by ANDES, Kp = Ki = 0.1 |
+
+REGF2's six drawn parameters follow REGF1's recipe (ANDES defaults times `default_rng(seed).uniform(0.7, 1.3, 6)`) with seed 1 instead of 0, so the two units share no numbers; the P-f droops still happen to land within 8% of each other. mf = 27 follows the earlier REGF2 transfer case in `Fall DRA/archive/Pre_harness_testing/Harness_kundur_test_case/transfer_kundur_regf2`: at ANDES's default (0.15) the base-corrected wdrp makes Tint under 1 ms, which is REGF1's law. The truth model is `../scorer/truth/regf2_as_submission.py` (REGF1's plus the lag and the PLL, 16 states); `../scorer/tests/test_truth_specs.py` checks it is at rest, that at DC it reduces to REGF1's droops when dd = 0, and that dd scales dP/d(omega) by 1 - dd*wdrp. Its wrong versions add mf x0.5, mf x2 and REGF1's law (mf x0.001, dd = 0).
+
+```bash
+$PY test_cases/build_test_grids.py --grids A2,B2,M2 --workers 6
+$PY test_cases/draw_grid_diagrams.py A2 B2 M2
+$PY test_cases/make_noise_free_sandbox.py --grid A2
+$PY test_cases/score_wrong_models_on_grid.py B2      # truth must score 0; writes grid_B2_check.json
+$PY test_cases/score_wrong_models_on_grid.py M2      # writes grid_M2_check.json
+```
+
+The solver gets grid A2's recordings with `--device REGF2` (`DEVICE=REGF2` for `solver/run_solver_batch.sh`), scored with `../scorer/config_min_regf2.json` or `config_rsi_regf2.json`; `solver_run.py` refuses a scorer config whose grids hold the other device.
+
+Built on the Mac on Nov 10: no limiter binds in any of the 18 runs and no channel has an SNR under 10. Closed loop, the truth scores exactly 0 and the flat model exactly 1 on both B2 and M2, so the truth spec reproduces ANDES's REGF2. The wrong versions (composite, from `grid_B2_check.json` and `grid_M2_check.json`; REGF1's on B and M for comparison):
+
+| error | B2 | M2 | REGF1 on B | REGF1 on M |
+|---|---|---|---|---|
+| ideal current loop | 0.010 | 0.014 | 0.011 | 0.015 |
+| wdrp x 0.8 | 0.116 | 0.142 | 0.120 | 0.142 |
+| Qdrp x 0.8 | 0.055 | 0.066 | 0.046 | 0.054 |
+| KPv x 0.7 | 0.56 | 1.06 | 0.53 | 1.04 |
+| mf x 0.5 | 0.050 | 0.059 | | |
+| mf x 2 | 0.088 | 0.143 | | |
+| REGF1's law (no VSM lag, no PLL damping) | 0.102 | 0.114 | | |
+
+The shared errors cost REGF2 what they cost REGF1, grid for grid, so B2 and M2 judge the same way B and M do. Getting the frequency law wrong (fitting REGF1's droop structure to the VSM unit) costs about 0.1, mostly in FR: visible, but far below the 0.5 to 0.9 that the Haiku-low baselines score, so most of a solver's error on REGF2 will come from the same places as on REGF1. No EIG scan has been done for B2 and M2.
 
 ## Limits worth knowing
 

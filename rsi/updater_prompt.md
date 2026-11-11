@@ -12,10 +12,12 @@ The scorer puts the solver's model into a simulated grid the solver never sees, 
 
 When this loop ends, the final harness is tested on a different inverter-based unit, on grids it has never seen. A change that only works for this device or this grid will cost score there.
 
+{{UNITS_NOTE}}
+
 HOW YOUR CHANGE IS JUDGED
 Your harness and the current one each get many fresh solver runs, interleaved. Yours replaces the current one only if it lowers the mean score by more than run-to-run variation explains, in two separate blocks of runs. Otherwise it is discarded. One run proves little, since the current harness's runs score anywhere from {{SCORE_MIN}} to {{SCORE_MAX}}. Look for patterns that recur across runs.
 
-This test only sees large effects. A change that lowers the mean score by a tenth is kept less than one time in ten, by a fifth about one time in three, and by a third about four times in five. Rewording or tightening method.md has rarely moved the score that far. What can is a change in what the solver is able to do: a tool that does part of the job for it reliably, or a check that tells it correctly whether a model is right.
+This test only sees large effects. A change that lowers the mean score by a tenth is kept less than one time in ten, by a fifth about one time in three, and by a third about four times in five. Rewording or tightening method.md has rarely moved the score that far.
 
 WHAT YOU GET
 The message after these instructions has three parts:
