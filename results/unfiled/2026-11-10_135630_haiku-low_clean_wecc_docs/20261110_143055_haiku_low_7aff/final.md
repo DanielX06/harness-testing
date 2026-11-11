@@ -1,0 +1,42 @@
+I saved `submission.json`, but the reactive-power model is poor. Its P is good and its Q is not, so I'd treat this as a partial result.
+
+**What the model is** (a droop-type grid-forming structure, Re = 0):
+- The unit is a voltage source E behind XL, with P = V·E·sin(δ−θ)/XL and Q = V·(E·cos(δ−θ) − V)/XL.
+- Active power droop: dδ/dt = ω0·mp·(P0 − Pm), where Pm is P passed through a filter TPf.
+- Voltage loop: Vcmd = Vset + mq·(Q0 − Qm), where Qm is Q through a filter TQf. E = kpv·(Vcmd − Vm) + xv, with dxv/dt = kiv·(Vcmd − Vm) and Vm the voltage through a filter TVf. E is clipped to [0, 1.25].
+- Initial states are set from the operating point (P0, Q0, V0, θ0), so the model starts at rest.
+
+**Fitted parameters** (from the staged test `A_vref_op1`): XL = 0.30, mq = 0.039, kpv = 0 (fit driven to bound), kiv = 3.90, mp = 0.058, TPf = TQf = 0.001 s (at lower bound), TVf = 0.2 s (at upper bound).
+
+**Results:**
+- P is reproduced well. Open-loop replay error is about 0.001 pu on the validation files.
+- Q is not. Replay error is 0.07 pu on `A_val_load_op1` (spread 0.014) and 0.018 pu on `A_val_vref_op2` (spread 0.021). The residuals split by setpoint level, so the steady Q-V gain is wrong.
+- Parameter identification: XL and mq trade off against the Q gain, and the time constants TPf, TQf and TVf sit at their bounds. Treat all of these as poorly identified.
+- A linear first-order Q model fitted better on training (rms 0.003–0.009). But it has a positive V gain of about +1.7, which conflicts with Q-V droop and risks destabilising the grid loop. It also failed on `A_val_load_op1` (error 0.03), so I did not use it.
+
+**Checks not done:** I did not run closed-loop simulation in a grid model, and I did not check the frequency-response or droop targets. Fault, line-trip and generator-trip recordings were not used for fitting. The Q mismatch is the main weakness and likely to dominate the score.
+
+**Submission (passes `check_submission.py` on both validation files):**
+
+```json
+{
+ "params": {"XL": 0.3, "mq": 0.0393, "kpv": 0.0, "kiv": 3.9019, "mp": 0.05843, "TPf": 0.001, "TQf": 0.001, "TVf": 0.2, "w0": 376.99111843077515},
+ "defs": {
+   "Vcmd": "Vset + mq*Q0 - mq*Qm",
+   "E0": "sqrt((Q0*XL+V0**2)**2+(P0*XL)**2)/V0",
+   "x": "de - theta",
+   "Eraw": "kpv*(Vcmd-Vm)+xv",
+   "Eint": "Min(Max(Eraw,0),1.25)",
+   "Pout": "V*Eint*sin(x)/XL",
+   "Qout": "V*(Eint*cos(x)-V)/XL"
+ },
+ "states": {
+   "Pm": {"rhs": "(Pout-Pm)/TPf", "init": "P0"},
+   "Qm": {"rhs": "(Qout-Qm)/TQf", "init": "Q0"},
+   "Vm": {"rhs": "(V-Vm)/TVf", "init": "V0"},
+   "de": {"rhs": "w0*mp*(P0-Pm)", "init": "theta0+atan2(P0*XL,Q0*XL+V0**2)"},
+   "xv": {"rhs": "kiv*(Vcmd-Vm)", "init": "sqrt((Q0*XL+V0**2)**2+(P0*XL)**2)/V0"}
+ },
+ "outputs": {"P": "Pout", "Q": "Qout"}
+}
+```
