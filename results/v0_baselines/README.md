@@ -17,6 +17,6 @@ Notes:
 
 - f141be203a8a40f4 is v0 before the Oct 22 file renames. The checker prints the same thing on every saved submission, so the two fingerprints are the same harness in practice (`../../harnesses/v0/README.md`).
 - The Oct 20 11:25 batch started two runs; the second (`aadf`) left only a transcript.
-- Only the Oct 30 batch has been scored again since the Oct 31 scorer fix (models using tanh, Abs, Min or Max failed with a NameError before it). The others may hold runs that scored 2 only because of that bug, so their means may be too high; `rescore_runs.py` fixes that at no API cost.
+- The Oct 31 scorer fix: before it, a model using tanh, Abs, Min or Max failed with a NameError and scored 2. The Oct 30 batch was scored again on Oct 31, and the 0.208 above is after the fix (some of its runs had scored 2 only because of the bug). Every other batch was scored again on Nov 10 on the desktop and came back unchanged, so none of them had a model the bug hit. Each run's `meta.json` has a `rescored` entry, and its old scores are kept beside the new ones as `score_before_<time>/`.
 - `2026-10-11_early_checks` is the first run of the project (`142b`) plus two checker test folders, `check_before` and `check_after`.
 - The Haiku batches ran before grid M existed; `../../analyses/monitor_grid/` scores their 22 submissions on M afterwards.
