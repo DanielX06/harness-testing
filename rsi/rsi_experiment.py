@@ -512,7 +512,8 @@ class BlockRunner:
                     scored = self._scored(runs_by_slot.get(slot, []))
                     if scored is not None:
                         failures_in_a_row = 0
-                        self.log(f"   {block} pair {slot[0]} {slot[1]}: {scored.composite:.3f} ({scored.tag})")
+                        unit = f", {scored.device}" if len(self.settings.devices) > 1 else ""
+                        self.log(f"   {block} pair {slot[0]} {slot[1]}: {scored.composite:.3f} ({scored.tag}{unit})")
                         continue
                     failures_in_a_row += 1
                     self.log(f"   {block} pair {slot[0]} {slot[1]}: "
