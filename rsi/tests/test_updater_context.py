@@ -188,7 +188,7 @@ check(harness_fingerprint(junk_harness) == harness_fingerprint(HARNESS) == "f141
 
 # 8. the token budget: reductions, in order
 seen = []
-for budget in (60000, 45000, 40000, 35000, 20000):
+for budget in (75000, 56000, 50000, 44000, 25000):          # Nov 12: x1.25 with 2.0 characters a token
     stats = build(token_budget=budget).stats
     seen.append((budget, stats["tokens_est"]["total"], stats["reductions"], stats["warnings"]))
     print("   budget", budget, "->", stats["tokens_est"]["total"], stats["reductions"], stats["warnings"])

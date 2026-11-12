@@ -66,7 +66,7 @@ METHOD_NUMBER = re.compile(r"(?<![\w.])\d+\.\d+|(?<![\w.])\d{2,}(?![\w.])")
 # The updater's conversation grows with every run_python output and every file it writes. Past the first line it is
 # told to wrap up; past the second it is stopped, which leaves room for MAX_OUTPUT_TOKENS of answer inside a
 # 200k-token context window.
-WRAP_UP_INPUT_TOKENS = 120_000
+WRAP_UP_INPUT_TOKENS = 140_000              # Nov 12: was 120k, which cut the Opus probe short after 8 sandbox calls
 STOP_INPUT_TOKENS = 160_000
 WRAP_UP_MESSAGE = ("Your conversation is near its length limit. Make your last edits, write your report with "
                    "write_proposal and call finish within the next few turns.")

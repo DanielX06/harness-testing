@@ -337,10 +337,10 @@ def reply_with_input(tokens, *blocks):
               usage=NS(input_tokens=tokens, output_tokens=1000, cache_read_input_tokens=0, cache_creation_input_tokens=0))
 
 
-proposal, client, _ = propose("wrap_up", [reply_with_input(130000, use("write_file", path="method.md", content=METHOD)),
+proposal, client, _ = propose("wrap_up", [reply_with_input(150000, use("write_file", path="method.md", content=METHOD)),
                                           reply(*finish())], smoke="off")
 check(proposal["status"] == "ok" and client.requests[1]["messages"][-1]["content"][-1] == {"type": "text", "text": WRAP_UP_MESSAGE},
-      "past 120k input tokens the updater is told to wrap up")
+      "past 140k input tokens the updater is told to wrap up")
 proposal, client, _ = propose("turns_left", [reply(use("write_file", path="method.md", content=METHOD))] * 3 + [reply(*finish())],
                              smoke="off", max_turns=8)
 warned = [index for index, request in enumerate(client.requests)

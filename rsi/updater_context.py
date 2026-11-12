@@ -51,8 +51,10 @@ META_FIELDS_READ = ("tag", "model", "effort", "harness_sha", "spent_usd", "steps
 # A deliberately high estimate of the token count. English prose runs near 3.5 characters a token on earlier
 # Claude tokenizers, and code and tables of numbers run denser. Claude 4.7 and later models, Haiku 5.5 among
 # them, use a tokenizer that can give up to about 35% more tokens for the same text. --count-tokens returns
-# the exact count and the ratio to put here.
-CHARS_PER_TOKEN = 2.5
+# the exact count and the ratio to put here. Nov 12: Opus 5.5's first turn in the probe on the wecc_docs runs was
+# 96,728 tokens against 78,674 estimated at 2.5, about 2.0 characters a token; at 2.5 the 80k budget let the
+# context start near 97k and the updater hit the wrap-up after eight sandbox calls.
+CHARS_PER_TOKEN = 2.0
 OUTCOME_DESCRIPTIONS = {
     "accepted": "kept: it became the current harness",
     "rejected": "rejected: not better by more than run-to-run variation",
