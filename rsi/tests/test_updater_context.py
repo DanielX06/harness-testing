@@ -239,8 +239,42 @@ if os.path.exists(golden):
             assert text.count(new_text) == 1, new_text[:60]
             text = text.replace(new_text, old_text)
         return text
-    check(without_parser(with_old_prompt(user_message(build().readable_markdown))) == without_parser(user_message(before)),
-          "the Oct 13 user message is unchanged by the rewrite, apart from the parser and the Nov 10 prompt changes")
+    def without_frequency_response(text):
+        """Nov 12: part 2 gained the frequency-response averages; take that paragraph out to compare the rest."""
+        return re.sub(r"\n\nFrequency-response error by channel[^\n]*", "", text, count=1)
+    check(without_parser(without_frequency_response(with_old_prompt(user_message(build().readable_markdown))))
+          == without_parser(user_message(before)),
+          "the Oct 13 user message is unchanged by the rewrite, apart from the parser, the Nov 10 prompt changes and "
+          "the Nov 12 frequency-response averages")
+
+# the frequency-response check: averaged per unit and channel over at least FR_MIN_RUNS_TABLE runs, never per run
+from rsi.updater_context import FR_CHANNELS, FR_MIN_RUNS_TABLE, frequency_response_by_unit  # noqa: E402
+import statistics  # noqa: E402
+rows = []
+for name in sorted(os.listdir(BATCH)):
+    private = os.path.join(BATCH, name, "score", "private.json")
+    if os.path.exists(private):
+        grid = next(grid for grid in json.load(open(private))["grids"].values() if grid["role"] == "selection")
+        rows.append(grid["fr_entries"])
+part2 = build().user_content[2]["text"]
+expected = ", ".join(f"{channel} {statistics.mean(row[channel] for row in rows):.2f}" for channel in FR_CHANNELS)
+check(f"{len(rows)} runs: {expected}" in part2 and part2.count("P/theta") == 1,
+      "part 2 gives the selection grid's frequency-response error per channel, averaged over the table's runs, once")
+few = os.path.join(work, "few")
+os.makedirs(few)
+for name in sorted(os.listdir(BATCH))[:FR_MIN_RUNS_TABLE - 1]:
+    if os.path.isdir(os.path.join(BATCH, name)):
+        shutil.copytree(os.path.join(BATCH, name), os.path.join(few, name))
+check("Frequency-response error" not in build([few]).user_content[2]["text"]
+      and frequency_response_by_unit([("unit 1", os.path.join(few, name)) for name in os.listdir(few)], FR_MIN_RUNS_TABLE) == {},
+      f"with fewer than {FR_MIN_RUNS_TABLE} runs the averages are left out")
+record = {"iteration": 1, "candidate": "h001", "parent": "h000", "outcome": "rejected", "n_candidate": 4, "n_current": 4,
+          "mean_candidate": 0.8, "mean_current": 0.9, "fr_by_unit": {
+              "candidate": {"unit 1": {"n": 4, "P/V": 1.4, "P/theta": 1.7, "Q/V": 1.5, "Q/theta": 0.9}},
+              "current": {"unit 1": {"n": 4, "P/V": 0.9, "P/theta": 0.5, "Q/V": 0.9, "Q/theta": 1.0}}}}
+text = history_text([record])
+check("this attempt: 4 runs: P/V 1.40, P/theta 1.70, Q/V 1.50, Q/theta 0.90" in text
+      and "replaced: 4 runs: P/V 0.90, P/theta 0.50" in text, "the history shows each arm's averages for an attempt")
 
 # where the scored submission came from, as the updater is told it (solver_run.py's rule from Nov 10)
 sources = copy_batch("sources")

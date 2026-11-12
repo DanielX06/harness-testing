@@ -103,7 +103,8 @@ from common.project_paths import (DEFAULT_EXPERIMENTS_DIR, DEVICE_SCORER_CONFIGS
 from common.run_provenance import git_commit  # noqa: E402
 from rsi.experiment_archive import ArchiveError, archive, restore  # noqa: E402
 from rsi.harness_proposal import propose_candidate  # noqa: E402
-from rsi.updater_context import hidden_score_names_pattern, read_history  # noqa: E402
+from rsi.updater_context import (FR_MIN_RUNS_HISTORY, frequency_response_by_unit, hidden_score_names_pattern,  # noqa: E402
+                                 read_history)
 from solver.python_sandbox import SandboxUnavailable  # noqa: E402
 from solver.solver_run import write_json_atomically  # noqa: E402
 
@@ -1060,6 +1061,11 @@ class RsiExperiment:
         td_current, failures_current = td_means_and_failure_rates(shown.current_runs)
         record.update(outcome=outcome, **shown.comparison, td_candidate=td_candidate, td_current=td_current,
                       fail_rate_candidate=failures_candidate, fail_rate_current=failures_current)
+        frequency_response = {arm: frequency_response_by_unit([(UNIT_LABELS.get(run.device, "another unit"), run.run_dir)
+                                                                for run in runs], FR_MIN_RUNS_HISTORY)
+                              for arm, runs in (("candidate", shown.candidate_runs), ("current", shown.current_runs))}
+        if frequency_response["candidate"] and frequency_response["current"]:
+            record["fr_by_unit"] = frequency_response
         self.log(f"   {name} {outcome}")
         return record, cycle
 

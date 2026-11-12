@@ -232,6 +232,9 @@ check(history[0]["n_candidate"] == 4 and history[0]["n_current"] == 4
       and abs(history[0]["mean_candidate"] - sum(run.composite for run in confirm_runs) / 4) < 1e-12
       and "first_pass" not in history[0] and blocks[1]["passed"] and blocks[2]["passed"],
       "h001 passed both blocks; the updater is shown the confirmation block's numbers only")
+check(history[0]["fr_by_unit"]["candidate"]["unit 1"]["n"] == 4 and set(history[0]["fr_by_unit"]["current"]["unit 1"])
+      == {"n", "P/V", "P/theta", "Q/V", "Q/theta"} and "fr_by_unit" not in history[2],
+      "the history keeps each arm's frequency-response averages, and none for a block with too few runs per arm")
 check(blocks[3]["stopped_early"] and blocks[3]["pairs_run"] == 2 and len(runs_in(experiment, "h003_test")) == 4,
       "h003 is rejected after 2 pairs, and pairs 3 and 4 are never run")
 check([(kind, pair, arm) for kind, block, pair, arm in launcher.launches if block == "h001_test"][:4]

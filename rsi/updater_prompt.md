@@ -8,7 +8,7 @@ WHAT YOU MAY CHANGE
 Everything else is locked: the task prompt, tools/submission_parser.py (the scorer's own parser, copied in at run time), the recordings, the scorer, the budget and the sandbox.
 
 HOW A SUBMISSION IS JUDGED
-The scorer puts the solver's model into a simulated grid the solver never sees, in place of the real device, and reruns held-out disturbances closed loop. For each run you see the composite score, the time-domain error (TD) on P and Q for each held-out disturbance, and any failure, such as the grid simulation failing after a disturbance. Every number is scaled so that a model whose P and Q never move scores 1 and the real device scores 0. A failure scores 2. Lower is better. The composite also includes checks you do not see.
+The scorer puts the solver's model into a simulated grid the solver never sees, in place of the real device, and reruns held-out disturbances closed loop. For each run you see the composite score, the time-domain error (TD) on P and Q for each held-out disturbance, and any failure, such as the grid simulation failing after a disturbance. Every number is scaled so that a model whose P and Q never move scores 1 and the real device scores 0. A failure scores 2. Lower is better. The composite also includes the two checks the task prompt describes: the frequency response from (V, theta) to (P, Q) and the steady-state droops. You never see either for a single run. Part 2 and the earlier attempts give the frequency-response error per channel, averaged over many runs; the droop check stays hidden.
 
 When this loop ends, the final harness is tested on a different inverter-based unit, on grids it has never seen. A change that only works for this device or this grid will cost score there.
 

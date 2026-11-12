@@ -66,7 +66,7 @@ OUTCOME_DESCRIPTIONS = {
 LOOP_WRITTEN_HISTORY_FIELDS = ("iteration", "candidate", "parent", "outcome", "files_changed", "n_candidate",
                                "n_current", "mean_candidate", "mean_current", "se_difference", "p_value",
                                "td_candidate", "td_current", "fail_rate_candidate", "fail_rate_current", "note",
-                               "diff_summary", "report_mismatch", "by_unit")
+                               "diff_summary", "report_mismatch", "by_unit", "fr_by_unit")
 UPDATER_TOOLS = [
     {"name": "write_file",
      "description": "Write one file of the new harness with its complete content. path is relative to the "
@@ -111,8 +111,8 @@ SANDBOX_TEXT = (
     "the harness.")
 SANDBOX_UNITS_TEXT = (
     " The runs take turns between units: the top of the sandbox holds {{FIRST_UNIT}}'s recordings, and {{OTHER_UNITS}} "
-    "hold the other units' (train/, val/, runs.json, dataset.json, as that unit's solver gets them). "
-    "submissions/scores.json says which unit each run was on.")
+    "(train/, val/, runs.json, dataset.json, as that unit's solver gets them). submissions/scores.json says which unit "
+    "each run was on.")
 UNITS_NOTE = (
     "The solver's runs take turns between {{UNIT_COUNT}} different units ({{UNIT_LIST}}), each identified from its own "
     "recordings and scored on its own grids. Part 2 says which unit each run was on. Your change is compared with the "
@@ -287,6 +287,7 @@ def load_run_summary(run_dir):
     device = (meta.get("labels") or {}).get("device") or meta.get("device") or "REGF1"
     run["unit"] = UNIT_LABELS.get(device, "another unit")       # never the device's own name
     run["transcript"] = os.path.join(run_dir, "transcript.json")
+    run["dir"] = run_dir
     if run["tool_timeouts"] is None:                     # runs from before Oct 17 don't record it
         run["tool_timeouts"] = _timeouts_from_transcript(run["transcript"])
     public_path = os.path.join(run_dir, "score", "public.json")
@@ -330,6 +331,44 @@ def read_history(path):
         return []
     with open(path) as file:
         return [json.loads(line) for line in file if line.strip()]
+
+
+# The frequency-response check (FR) is shown only as averages over many runs: per unit and per channel, over at least
+# this many runs, so no single run's error (which would let the updater solve for the true unit's response) is shown.
+FR_CHANNELS = ("P/V", "P/theta", "Q/V", "Q/theta")
+FR_MIN_RUNS_TABLE = 5
+FR_MIN_RUNS_HISTORY = 4
+
+
+def selection_fr_channels(run_dir):
+    """{channel: error} of the run's selection grid, from score/private.json, or None. The one thing read from
+    private.json, and only ever passed on averaged (frequency_response_by_unit)."""
+    path = os.path.join(run_dir, "score", "private.json")
+    if not os.path.exists(path):
+        return None
+    for grid in read_json(path).get("grids", {}).values():
+        if grid.get("role") == "selection" and isinstance(grid.get("fr_entries"), dict):
+            return {channel: float(grid["fr_entries"][channel]) for channel in FR_CHANNELS if channel in grid["fr_entries"]}
+    return None
+
+
+def frequency_response_by_unit(units_and_dirs, min_runs):
+    """{unit: {"n": runs, channel: mean error}} over (unit, run folder) pairs, for units with at least min_runs runs
+    that have the numbers. Never one run's numbers."""
+    by_unit = {}
+    for unit, run_dir in units_and_dirs:
+        channels = selection_fr_channels(run_dir)
+        if channels and len(channels) == len(FR_CHANNELS):
+            by_unit.setdefault(unit, []).append(channels)
+    return {unit: {"n": len(rows), **{channel: statistics.mean(row[channel] for row in rows) for channel in FR_CHANNELS}}
+            for unit, rows in sorted(by_unit.items()) if len(rows) >= min_runs}
+
+
+def frequency_response_text(averages, show_units):
+    """'unit 1 (10 runs): P/V 1.43, P/theta 1.71, Q/V 1.45, Q/theta 0.96' for each unit."""
+    return "; ".join((f"{unit}, {values['n']} runs: " if show_units else f"{values['n']} runs: ")
+                     + ", ".join(f"{channel} {values[channel]:.2f}" for channel in FR_CHANNELS)
+                     for unit, values in averages.items())
 
 
 def flatten_for_scan(value):
@@ -399,8 +438,9 @@ def _td_cell(values):
     return "failed" if values["failed"] else f"{values['P']:.2f} / {values['Q']:.2f}"
 
 
-def run_table_text(runs, runs_available, harness_sha):
-    """Part 2's numbers, generated here from public.json and meta.json fields only."""
+def run_table_text(runs, runs_available, harness_sha, frequency_response=None):
+    """Part 2's numbers, generated here from public.json and meta.json fields, plus frequency_response: the
+    frequency-response error averaged per unit and channel (frequency_response_by_unit), never per run."""
     scored = [run for run in runs if run["scored"]]
     composites = [run["composite"] for run in scored]
     disturbance_names = []
@@ -437,6 +477,11 @@ def run_table_text(runs, runs_available, harness_sha):
     if timeouts:
         lines.append(f"Tool calls stopped at {CALL_TIME_LIMIT_S} s: {sum(timeouts)} of {tool_calls}. Runs stopped by "
                      f"the budget: {sum(1 for run in runs if run['budget_stop'])}.")
+    if frequency_response:
+        lines.append("Frequency-response error by channel, from the task prompt's check of the model's linearization "
+                     "between 0.1 and 10 Hz (0 is the real unit, 1 a model whose P and Q never move, capped at 2), "
+                     "averaged over this harness's runs in the table (never shown for a single run). "
+                     + ("By unit: " if several else "Over ") + frequency_response_text(frequency_response, several) + ".")
     unscored = [run["id"] for run in runs if not run["scored"]]
     if unscored:
         lines.append(f"Not scored (the scorer itself failed): {', '.join(unscored)}.")
@@ -550,6 +595,12 @@ def history_text(records, show_in_full=None):
                 f"{name} P {td_candidate[name]['P']:.2f}/{td_current[name]['P']:.2f}, "
                 f"Q {td_candidate[name]['Q']:.2f}/{td_current[name]['Q']:.2f}"
                 for name in td_candidate if name in td_current) + ".")
+        fr = record.get("fr_by_unit") or {}
+        if fr.get("candidate") and fr.get("current"):
+            show_units = len(set(fr["candidate"]) | set(fr["current"])) > 1
+            lines.append("Frequency-response error by channel, averaged over each arm's runs in the block, this attempt: "
+                         + frequency_response_text(fr["candidate"], show_units) + ". The harness it would have replaced: "
+                         + frequency_response_text(fr["current"], show_units) + ".")
         failed_candidate, failed_current = record.get("fail_rate_candidate") or {}, record.get("fail_rate_current") or {}
         if failed_candidate and failed_current:
             lines.append("Share of runs where each disturbance failed, this attempt / the harness it would have "
@@ -578,8 +629,8 @@ def updater_instructions(model, effort, scope, lowest_score, highest_score, pyth
     if python_tool:
         sandbox_text = SANDBOX_TEXT
         if len(units) > 1:
-            sandbox_text += (SANDBOX_UNITS_TEXT.replace("{{FIRST_UNIT}}", units[0])
-                             .replace("{{OTHER_UNITS}}", ", ".join(unit_folder(unit) + "/" for unit in units[1:])))
+            others = "; ".join(f"{unit_folder(unit)}/ holds {unit}'s" for unit in units[1:])
+            sandbox_text += SANDBOX_UNITS_TEXT.replace("{{FIRST_UNIT}}", units[0]).replace("{{OTHER_UNITS}}", others)
         template = template.replace("{{SANDBOX}}", sandbox_text).replace("{{TEST_STEP}}", TEST_STEP_WITH_SANDBOX)
     else:
         template = template.replace("{{SANDBOX}}\n\n", "").replace("{{TEST_STEP}}", TEST_STEP_WITHOUT_SANDBOX)
@@ -657,7 +708,9 @@ class UpdaterContextBuilder:
         check_generated_text("the updater prompt", system_prompt, self.hidden_pattern)
         part1 = solver_view_text(self.harness_dir, noise, self.scope, units)
         check_generated_text("part 1 (the solver's files)", part1, self.hidden_pattern)
-        table = run_table_text(runs, runs_available, harness_sha)
+        frequency_response = frequency_response_by_unit([(run["unit"], run["dir"]) for run in runs if run["scored"]],
+                                                        FR_MIN_RUNS_TABLE)
+        table = run_table_text(runs, runs_available, harness_sha, frequency_response)
         check_generated_text("part 2 (run table)", table, self.hidden_pattern)
         for number, record in enumerate(self.history, start=1):
             check_generated_text(f"history record {number} (fields the loop writes)",
