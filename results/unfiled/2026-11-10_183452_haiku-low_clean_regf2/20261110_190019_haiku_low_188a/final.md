@@ -1,0 +1,44 @@
+The model is saved to `submission.json`. It passes the scorer's checks on both validation files, with open-loop replay errors around 5e-4 to 1.4e-3 in P and 5e-3 to 6e-3 in Q, against flat-line errors of 3e-2 or more.
+
+**Model (fitted on the 8 training recordings)**
+
+Let Δθ = θ − θ0.
+
+- **Active power:** P = P0 − Dp·(Δθ − w)/(Tw·2π·60) + Ps
+  - `w` is a washout state, dw/dt = (Δθ − w)/Tw, so the term is a frequency-droop on the angle rate. Dp ≈ 19.7 pu, Tw ≈ 0.10 s.
+  - `Ps` is a lagged response to voltage, dPs/dt = (−kpv·(V − V0) − Ps)/Tp, with kpv ≈ 0.14 and Tp ≈ 0.20 s.
+- **Reactive power:** Q = Q0 + Qs + qd·(V − V0) + kd·(V − Vf)
+  - `Qs` is a slow voltage-reference integrator, dQs/dt = (kq·(Vset − Vf) − Qs)/Tq, with kq ≈ 19.5 and Tq ≈ 18.7 s.
+  - `Vf` is a filtered voltage, dVf/dt = (V − Vf)/Tf, with qd ≈ 0.52 and kd ≈ 0.42.
+- All states start at rest (Qs = 0, w = 0, Ps = 0, Vf = V0), so P = P0 and Q = Q0 at t = 0.
+
+**Parameter identification**
+
+- **Well identified:** the frequency droop Dp (about 19.7 pu) and the angle washout Tw. The generator-trip recording gives a sustained angle ramp that pins these down. Active-power error is about 2e-4 pu on ambient data and 2e-3 pu on the trip.
+- **Moderately identified:** the reactive-power voltage gain kq and its slow lag Tq. The setpoint steps in the staged tests drive these.
+- **Poorly identified:**
+  - Tf is at its upper bound of 2 s, so the true voltage-filter lag is probably longer than the fit allows.
+  - qd and kd trade off against each other and against Tf, because all three act on V in the Q path.
+  - Q error remains about 0.025 pu during the fault and line-trip recordings. The model does not capture the fast reactive response to the voltage dip, so Q dynamics during faults are the weakest part of the submission.
+
+I did not run the frequency-response or droop checks explicitly, so those are unverified beyond the parameters above.
+
+```json
+{
+  "params": {
+    "kq": 19.523681, "Tq": 18.699403, "qd": 0.520195, "Dp": 19.654823,
+    "Tw": 0.100100, "Tp": 0.203200, "kpv": 0.138400, "Tf": 2.0, "kd": 0.424600
+  },
+  "defs": {"dth": "theta-theta0"},
+  "states": {
+    "Qs": {"rhs": "(kq*(Vset-Vf)-Qs)/Tq", "init": "0.0"},
+    "Vf": {"rhs": "(V-Vf)/Tf", "init": "V0"},
+    "w": {"rhs": "(dth-w)/Tw", "init": "0.0"},
+    "Ps": {"rhs": "(-kpv*(V-V0)-Ps)/Tp", "init": "0.0"}
+  },
+  "outputs": {
+    "P": "P0 - Dp*(dth-w)/(Tw*2*pi*60) + Ps",
+    "Q": "Q0 + Qs + qd*(V-V0) + kd*(V-Vf)"
+  }
+}
+```

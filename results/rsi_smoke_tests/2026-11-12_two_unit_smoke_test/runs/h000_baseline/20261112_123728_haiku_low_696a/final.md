@@ -1,0 +1,49 @@
+I saved the model to `submission.json`. It passes `tools/check_submission.py` on both validation recordings and replays them open-loop with RMS errors of about 0.0004–0.0005 pu in P and 0.005–0.007 pu in Q. I did not check the frequency-response or droop metrics, and I did not run the closed-loop grid simulation.
+
+**Model structure.** It is a droop-type grid-forming unit: an internal voltage E behind a reactance XL, with Re = 0.
+
+- **Active power and frequency:** the internal angle δ integrates w0·mp·(P0 − Pm), where Pm is P filtered by Tf. Pref is held at the operating-point P0.
+- **Voltage control:** a voltage-loop integrator xv runs on Vcmd − Vm, with Vcmd = Vset + mq·(Q0 − Qm). Vm is V filtered by Tf and Qm is Q filtered by Tf.
+- **Setpoint feedforward:** E = xv + kff·(Vset − V0), clipped to [0, 1.5]. This is needed to get Q to move promptly at a setpoint step.
+- **Outputs:** P = V·E·sin(δ−θ)/XL, and Q = V·(E·cos(δ−θ) − V)/XL + bq·(V² − V0²).
+- **Extra Q term:** the bq term is not in the documented droop model. It was added because the measured Q rises with V on a 5–100 ms scale (slope about +1 to +2 pu), which a voltage source behind a reactance cannot produce.
+
+**Fitted parameters** (from the training recordings, decimated to 5 ms):
+
+| Parameter | Value | Notes |
+|---|---|---|
+| XL | 0.5 | At the upper bound; poorly identified, trades off with kff and bq |
+| mp | 0.0584 | Reasonably identified from the ambient and load-change recordings |
+| mq | 0.0284 | Reasonably identified from the voltage-reference steps |
+| kiv | 0.577 | Below the documented 3–15 range; slow integral action |
+| kpv | 0 | Not identified; set to zero |
+| Tf | 0.01 | At the lower bound of the documented range; the data prefers the fastest allowed filter |
+| kff | 0.871 | Setpoint feedforward; well driven by the steps |
+| bq | 1.288 | Fast Q–V term; the main departure from the documented structure |
+
+**Weak points.**
+- XL sits at its bound, so the split between the E-behind-reactance Q and the bq term is not well determined.
+- The line-trip and generator-trip recordings still show Q residuals of about 0.02 pu, the largest error in the training set. The model does not capture the Q dynamics after those events.
+- I did not model the transient current limit, so severe faults are not covered. The fault recording was not used in the fit.
+- Because the fit leans on bq and a bounded XL, the closed-loop behaviour on a different grid is the main risk; the frequency-response and droop checks were not run.
+
+```json
+{
+  "params": {"w0": 376.99111843077515, "XL": 0.5, "mp": 0.05843813, "mq": 0.02842282, "kiv": 0.57719, "Tf": 0.01, "kff": 0.87103, "bq": 1.28774},
+  "defs": {
+    "Vcmd": "Vset + mq*(Q0 - Qm)",
+    "Ein": "xv + kff*(Vset - V0)",
+    "Eint": "Min(Max(Ein,0),1.5)",
+    "Pe": "V*Eint*sin(delta - theta)/XL",
+    "Qe": "V*(Eint*cos(delta - theta) - V)/XL + bq*(V*V - V0*V0)"
+  },
+  "states": {
+    "delta": {"rhs": "w0*mp*(P0 - Pm)", "init": "theta0 + atan2(P0*XL/V0, (Q0*XL + V0**2)/V0)"},
+    "xv": {"rhs": "kiv*(Vcmd - Vm)", "init": "sqrt(((Q0*XL + V0**2)/V0)**2 + (P0*XL/V0)**2)"},
+    "Pm": {"rhs": "(Pe - Pm)/Tf", "init": "P0"},
+    "Qm": {"rhs": "(Qe - Qm)/Tf", "init": "Q0"},
+    "Vm": {"rhs": "(V - Vm)/Tf", "init": "V0"}
+  },
+  "outputs": {"P": "Pe", "Q": "Qe"}
+}
+```

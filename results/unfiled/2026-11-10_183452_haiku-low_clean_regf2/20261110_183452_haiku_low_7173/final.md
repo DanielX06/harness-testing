@@ -1,0 +1,63 @@
+The submission is saved as `submission.json`. On the two validation recordings the model replays the device well, but its steady-state Q-V gain is high and I could not check closed-loop stability.
+
+**Model (three internal states, all starting at rest)**
+
+- **Active power:** `P = P0 − Kp·(Δθ − xw) + Kv·(V − V0)`, where `Δθ = θ − θ0`.
+  - `xw` is a first-order lag of Δθ with time constant `Tw`. The term `Δθ − xw` is roughly `Tw·dθ/dt`, so this is a frequency-droop term with an effective gain of about `Kp·Tw` on the speed signal.
+- **Reactive power:** `Q = Q0 + x2 + Kd·(Vset − V0) − Kdv·(V − V0)`.
+  - `Kd` and `Kdv` act directly, which gives the fast Q jump seen at each setpoint step.
+  - `x2` is a second lag, in series with `x1`, that carries the slow part of the response.
+- **Lag stages:**
+  - `dx1/dt = (Kq·(Vset − V0) − Kvq·(V − V0) − x1)/T1`
+  - `dx2/dt = (x1 − x2)/T2`
+  - `dxw/dt = (Δθ − xw)/Tw`
+
+**Fitted parameters (training data, 10 ms decimated):**
+
+| Param | Value | Notes |
+|---|---|---|
+| Kp | 0.606 | Well identified. Frequency droop, with Tw. |
+| Kv | −0.079 | Weakly identified, near zero. |
+| Tw | 0.086 s | Moderately identified. |
+| Kd | 1.68 | Direct setpoint jump, fairly well identified from the step tests. |
+| Kdv | −0.83 | Direct V response, moderately identified. |
+| Kq | 16.4 | Poorly identified. Trades off against Kvq. |
+| Kvq | 18.5 | Poorly identified. Trades off against Kq. |
+| T1 | 4.6 s | Moderately identified. |
+| T2 | 12.7 s | Poorly identified. |
+
+**Steady-state gains:** the model gives dQ/dV ≈ −17 and dQ/dVset ≈ +18 pu/pu. A regression on the vref tests gave dQ/dV between −3 and −23, so these are only loosely constrained. This is the main risk. A stiff Q-V gain could make the device hold voltage tightly in closed loop, and I did not test whether that destabilizes the grid.
+
+**Validation:** the checker reports the following open-loop replay errors.
+- `val/A2_val_load_op1`: P RMSE 6.7e-4 (flat-model 0.026), Q RMSE 5.1e-3 (flat 0.026).
+- `val/A2_val_vref_op2`: P RMSE 1.1e-3 (flat 0.006), Q RMSE 4.4e-3 (flat 0.028).
+
+**Fit quality:** training residuals are about 0.002–0.003 on ambient and load recordings, about 0.005 on the vref tests, and about 0.017 on the fault and line-trip recordings. The fault and line-trip residuals are the least explained part of the model. I did not add nonlinear Q limits or a separate voltage-dip response.
+
+**Not done:** I did not check closed-loop behaviour in the grid simulation, and I did not try a constrained variant with a softer steady-state Q-V gain. Both would be the next steps.
+
+```json
+{
+  "params": {
+    "Kp": 0.6055943497,
+    "Kv": -0.0792033673,
+    "Tw": 0.0862808730,
+    "Kd": 1.6763,
+    "Kdv": -0.8316,
+    "Kq": 16.3653,
+    "Kvq": 18.4941,
+    "T1": 4.6493,
+    "T2": 12.6505
+  },
+  "defs": {},
+  "states": {
+    "xw": {"rhs": "(theta-theta0-xw)/Tw", "init": "0.0"},
+    "x1": {"rhs": "(Kq*(Vset-V0)-Kvq*(V-V0)-x1)/T1", "init": "0.0"},
+    "x2": {"rhs": "(x1-x2)/T2", "init": "0.0"}
+  },
+  "outputs": {
+    "P": "P0-Kp*((theta-theta0)-xw)+Kv*(V-V0)",
+    "Q": "Q0+x2+Kd*(Vset-V0)-Kdv*(V-V0)"
+  }
+}
+```

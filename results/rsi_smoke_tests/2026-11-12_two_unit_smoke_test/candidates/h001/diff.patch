@@ -1,0 +1,78 @@
+--- a/method.md
++++ b/method.md
+@@ -2,7 +2,14 @@
+ 1. Read runs.json and dataset.json, then look at the data before fitting anything. Check what moves after each event and on what time scales, how the device's P and Q relate to V, theta and the voltage setpoint, and how large the noise is.
+ 2. Use both kinds of recording. The staged voltage-reference tests show the device's voltage control directly. The ambient recordings and natural events show how it responds to the grid.
+ 3. Propose a candidate structure and fit its parameters on train/, with P and Q as outputs and V, theta and Vset as inputs, the way the scorer uses them.
+-4. Check each candidate as close to how it will be scored as you can: drive it with the measured V, theta and Vset from val/, integrate it forward, and compare its P and Q with the measured ones. The scorer runs closed loop, inside the grid. A model that reacts too strongly can destabilize the grid even if it replays well. A model with very fast internal dynamics can diverge in open-loop replay and still run fine in the grid.
+-5. Revise based on what the residuals show, not on the fit score alone. Keep track of which candidates you rejected and why.
+-6. Stop when the residuals are close to the noise or further terms stop improving the validation fit. Note any parameter that is poorly identified or trades off against another one.
+-7. Write the model to submission.json. Run python tools/check_submission.py submission.json val/<file>.csv on each validation file, fix anything it reports, and then submit.
++4. Check each candidate as close to how it will be scored as you can: drive it with the measured V, theta and Vset from val/, integrate it forward, and compare its P and Q with the measured ones. The scorer runs closed loop, inside the grid. A model that reacts too strongly can destabilize the grid even if it replays well.
++5. Run the stability check on every candidate before you accept it:
++       python tools/stability_check.py submission.json train/<file>.csv
++   It linearizes the model at the recording's first sample and prints its eigenvalues and its instantaneous P and Q sensitivities to V and theta.
++   - UNSTABLE: do not submit this candidate. Refit with the offending gain or filter bounded, or simplify the structure. A grid simulation that goes unstable scores as a failure.
++   - FAST: the model has a loop faster than 0.01 s. Check whether a filter or gain went to its bound to fit a fast event. If the fit needs it, keep the fast term small and say so in your final message.
++   - A positive dQ/dV in the sensitivities means the model raises Q when V rises at fixed angle. Only keep such a term if the recordings show it clearly, and keep its size small.
++   The check does not show whether the model fits. Use it together with step 4.
++6. Revise based on what the residuals show, not on the fit score alone. Keep track of which candidates you rejected and why.
++7. Stop when the residuals are close to the noise or further terms stop improving the validation fit. Note any parameter that is poorly identified or trades off against another one.
++8. Write the model to submission.json. Run python tools/check_submission.py submission.json val/<file>.csv on each validation file, then python tools/stability_check.py submission.json val/<file>.csv, fix anything either reports, and then submit.
+--- /dev/null
++++ b/tools/stability_check.py
+@@ -0,0 +1,54 @@
++"""Linearizes submission.json at a recording's first sample and reports whether the model is stable and how fast it is.
++
++    python tools/stability_check.py submission.json train/<file>.csv
++
++Prints:
++  - the eigenvalues of the model's own linear dynamics (state rates), with time constants in s and frequency in Hz;
++  - UNSTABLE if any eigenvalue has a positive real part (the grid simulation may then fail);
++  - FAST if any eigenvalue has |real part| above 1/(0.01 s), i.e. a loop faster than the filters the
++    documentation allows (a sign of an overly fast inner path that can destabilize the grid);
++  - the instantaneous output sensitivities dP/dV, dP/dtheta, dQ/dV, dQ/dtheta at the operating point.
++Neutral modes (eigenvalue near 0, such as an angle state with no restoring term) are expected and are not flagged.
++Nothing is fitted; this only reports what the submission already says.
++"""
++import os
++import sys
++
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++import numpy as np                                      # noqa: E402
++import pandas as pd                                     # noqa: E402
++import submission_parser                                # noqa: E402
++
++
++def main(submission_path, csv_path):
++    model = submission_parser.load_submission(submission_path)
++    first = pd.read_csv(csv_path).iloc[0]
++    operating_point = [float(first["voltage_pu"]), float(first["bus_angle_rad"]),
++                       float(first["active_power_pu"]), float(first["reactive_power_pu"])]
++    lin = model.linearize(operating_point)
++    A, B, C, D = lin["A"], lin["B"], lin["C"], lin["D"]
++    print(f"states: {model.state_names}")
++    print(f"init residual {lin['init_residual']:.2e}, output mismatch {lin['init_output_mismatch']:.2e}")
++    flags = []
++    if A.size:
++        eig = np.linalg.eigvals(A)
++        order = np.argsort(-np.real(eig))
++        for k in order:
++            re, im = np.real(eig[k]), np.imag(eig[k])
++            tau = (1.0 / abs(re)) if abs(re) > 1e-12 else float("inf")
++            print(f"  eig {re:+.4g} {im:+.4g}j   tau={tau:.4g} s   f={abs(im)/(2*np.pi):.4g} Hz")
++        if np.any(np.real(eig) > 0):
++            flags.append("UNSTABLE: an eigenvalue has a positive real part")
++        if np.any(np.abs(np.real(eig)) > 100.0):
++            flags.append("FAST: an eigenvalue faster than 100 rad/s (time constant under 0.01 s)")
++    print("instantaneous sensitivities (rows P, Q; columns V, theta):")
++    print(np.array2string(D, precision=4))
++    print("flags:", flags if flags else "none")
++    return 0
++
++
++if __name__ == "__main__":
++    if len(sys.argv) != 3:
++        print(__doc__)
++        sys.exit(1)
++    sys.exit(main(sys.argv[1], sys.argv[2]))
