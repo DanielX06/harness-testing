@@ -70,6 +70,16 @@ WRAP_UP_INPUT_TOKENS = 120_000
 STOP_INPUT_TOKENS = 160_000
 WRAP_UP_MESSAGE = ("Your conversation is near its length limit. Make your last edits, write your report with "
                    "write_proposal and call finish within the next few turns.")
+# An updater with a sandbox can spend every turn building and testing and never submit; warn it once, with this many
+# turns or this share of its budget left, so an attempt is not lost to the limits (Nov 12, before run4)
+TURNS_LEFT_TO_WARN = 6
+BUDGET_SHARE_TO_WARN = 0.75
+
+
+def limits_message(turns_left, usd_left):
+    return (f"You have {turns_left} turns and ${usd_left:.2f} of your budget left for this attempt. Stop building: make "
+            "your last edits, write your report with write_proposal and call finish within the next few turns. An "
+            "attempt that runs out before finish is never run.")
 
 
 # ---- the candidate folder ---------------------------------------------------------------------------------
@@ -469,7 +479,7 @@ class HarnessUpdaterSession:
         self.usage = {key: 0 for key in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")}
         self.usage_per_turn = []                # the first turn's input is the exact size of the context
         self.self_test_done, self.self_test_log = False, []
-        self.nudged = self.wrap_up_sent = False
+        self.nudged = self.wrap_up_sent = self.limits_warned = False
 
     def run(self):
         """Talk until the updater's finish is accepted, it gives up, or turns or budget run out. Sets status to
@@ -518,6 +528,11 @@ class HarnessUpdaterSession:
             if context_tokens > WRAP_UP_INPUT_TOKENS and not self.wrap_up_sent:
                 self.wrap_up_sent = True
                 results.append({"type": "text", "text": WRAP_UP_MESSAGE})
+            turns_left = self.max_turns - self.turns
+            if not self.limits_warned and (turns_left <= TURNS_LEFT_TO_WARN
+                                           or self.spent_usd >= BUDGET_SHARE_TO_WARN * self.max_usd):
+                self.limits_warned = True
+                results.append({"type": "text", "text": limits_message(turns_left, max(self.max_usd - self.spent_usd, 0.0))})
             self.messages.append({"role": "user", "content": results})
             if self.spent_usd > self.max_usd:
                 self.status = "over_budget"
@@ -676,11 +691,14 @@ def main():
                         help="skip showing the updater its checker on the best and worst submissions before it submits")
     parser.add_argument("--smoke-python", default=None, help="interpreter for --smoke local (needs numpy, pandas, scipy, sympy)")
     parser.add_argument("--no-python", action="store_true", help="give the updater no run_python sandbox")
+    parser.add_argument("--config", nargs="+", default=[str(RSI_SCORER_CONFIG)],
+                        help="scorer configs whose hidden grids the updater must never see: one per unit in the runs "
+                             "(scorer/config_rsi.json scorer/config_rsi_regf2.json for runs on both units)")
     options = parser.parse_args()
     proposal = propose_candidate(options.runs, options.harness, options.out, options.scope, read_history(options.history),
                                  options.model, options.effort, options.max_turns, options.max_usd, options.smoke,
                                  options.smoke_python, self_test=not options.no_self_test,
-                                 python_tool=not options.no_python)
+                                 python_tool=not options.no_python, scorer_config=options.config)
     updater = proposal["updater"]
     print(f"\n{proposal['candidate']}: {proposal['status']}  ({updater['turns']} turns, ${updater['spent_usd']:.4f}, "
           f"{updater['seconds']} s, {proposal['python'].get('calls', 0)} run_python calls)")

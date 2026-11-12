@@ -341,6 +341,13 @@ proposal, client, _ = propose("wrap_up", [reply_with_input(130000, use("write_fi
                                           reply(*finish())], smoke="off")
 check(proposal["status"] == "ok" and client.requests[1]["messages"][-1]["content"][-1] == {"type": "text", "text": WRAP_UP_MESSAGE},
       "past 120k input tokens the updater is told to wrap up")
+proposal, client, _ = propose("turns_left", [reply(use("write_file", path="method.md", content=METHOD))] * 3 + [reply(*finish())],
+                             smoke="off", max_turns=8)
+warned = [index for index, request in enumerate(client.requests)
+          if any(block.get("type") == "text" and "turns and $" in block.get("text", "")
+                 for block in request["messages"][-1]["content"] if isinstance(block, dict))]
+check(proposal["status"] == "ok" and warned == [2],
+      "with 6 turns left the updater is told once to stop building and finish")
 proposal, _, _ = propose("context_full", [reply_with_input(170000, use("write_file", path="method.md", content=METHOD))],
                          smoke="off")
 check(proposal["status"] == "context_full" and proposal["manifest"] is None, "past 160k input tokens the conversation ends")
