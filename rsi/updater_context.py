@@ -123,8 +123,27 @@ UNITS_NOTE = (
 LABEL_TO_DEVICE = {label: device for device, label in UNIT_LABELS.items()}
 
 
+# In a loop on the random grid pool every run has its own training grid: rsi_experiment.py sets, before each
+# proposal, which run's recordings stand for each unit (set_unit_data_dirs). Empty: the units' fixed training grids.
+UNIT_DATA_OVERRIDES = {}
+RANDOM_GRIDS_NOTE = (
+    "\n\nEvery solver run in this experiment is on its own randomly drawn grid: the same kind of ten-bus network, with "
+    "the unit in a different generator's place, different circuits out of service, loads and dispatch. Each run is "
+    "identified from its own grid's recordings and scored on another random grid nobody has seen. The recordings, "
+    "runs.json, dataset.json and diagram you are shown are one run's, as an example; the solver of every other run "
+    "had its own. A tool or instruction that only suits one grid's numbers will not help.")
+
+
+def set_unit_data_dirs(mapping):
+    """{unit label: training data folder} for the next context (random grid pool); {} restores the fixed grids."""
+    UNIT_DATA_OVERRIDES.clear()
+    UNIT_DATA_OVERRIDES.update(mapping)
+
+
 def unit_data_dir(unit, noise):
-    """The recordings the solver gets for a unit."""
+    """The recordings the solver gets for a unit (or, on the random grid pool, one run's, as an example)."""
+    if unit in UNIT_DATA_OVERRIDES:
+        return UNIT_DATA_OVERRIDES[unit]
     return DEVICE_SOLVER_DATA_DIRS[LABEL_TO_DEVICE[unit]][noise]
 
 
@@ -181,7 +200,10 @@ def hidden_score_names_pattern(scorer_config=RSI_SCORER_CONFIG):
                 continue
             names.add(grid["name"])
             case = read_json(os.path.join(os.path.dirname(config), grid["path"], "holdout", "case.json"))
-            names |= set(case["runs"]) - visible_runs
+            if grid["role"] == "train_holdout":     # the solver's own grid: only its held-out runs are hidden
+                names |= {run for run, spec in case["runs"].items() if spec.get("split") == "holdout"}
+            else:
+                names |= set(case["runs"]) - visible_runs
     words = "|".join(rf"\b{re.escape(name)}\b" for name in sorted(names))
     return re.compile(HIDDEN_FIELD_NAMES + (f"|{words}" if words else ""))
 
@@ -658,6 +680,8 @@ def updater_instructions(model, effort, scope, lowest_score, highest_score, pyth
                        "UPDATER_OUTPUT_CHARS": str(UPDATER_OUTPUT_CHARS),
                        "SOLVER_BUDGET_USD": f"{API_BUDGET_USD:.0f}"}.items():
         template = template.replace("{{" + key + "}}", value)
+    if UNIT_DATA_OVERRIDES:
+        template += RANDOM_GRIDS_NOTE
     unfilled = re.findall(r"\{\{[A-Z_]+\}\}", template)
     if unfilled:
         raise ValueError(f"unfilled placeholders in {UPDATER_PROMPT_FILE}: {unfilled}")

@@ -30,7 +30,7 @@ import numpy as np
 REPOSITORY_ROOT = os.path.dirname(os.path.abspath(__file__))
 FAST_CHECKS = ["scorer/tests/test_submission_parser.py", "scorer/tests/test_truth_specs.py", "solver/tests/test_solver_run.py",
                "rsi/tests/test_updater_context.py", "rsi/tests/test_harness_proposal.py",
-               "rsi/tests/test_rsi_experiment.py", "rsi/tests/test_experiment_archive.py"]
+               "rsi/tests/test_rsi_experiment.py", "rsi/tests/test_experiment_archive.py", "rsi/tests/test_grid_pool.py"]
 ANDES_CHECKS = [["scorer/tests/test_scorer.py", "--quick"]]
 
 

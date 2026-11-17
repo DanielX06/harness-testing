@@ -52,6 +52,8 @@ DEVICE_SCORER_CONFIGS = {
     "REGF2": {"min": SCORER_DIR / "config_min_regf2.json", "rsi": SCORER_DIR / "config_rsi_regf2.json"},
     "REGF3": {"min": SCORER_DIR / "config_min_regf3.json", "rsi": SCORER_DIR / "config_rsi_regf3.json"},
 }
+# the random grid pool (test_cases/build_grid_pool.py): one folder per device, one per draw; not in git
+GRID_POOL_DIR = REPOSITORY_ROOT / "grid_pool"
 # devices kept out of every RSI loop: REGF3 is the held-out test, so no loop may select on it
 HELD_OUT_DEVICES = ("REGF3",)
 # what the updater calls each device: the device names themselves are hidden (common/hidden_names.py)

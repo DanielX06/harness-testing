@@ -306,6 +306,8 @@ def run_data_dir(run_dir, noise):
     """The recordings the solver of this run had: its device's training data (grid A for REGF1, A2 for REGF2)."""
     with open(os.path.join(run_dir, "meta.json")) as file:
         meta = json.load(file)
+    if meta.get("data") and os.path.isdir(meta["data"]):      # the folder the run really had (a random grid's X)
+        return meta["data"]
     device = (meta.get("labels") or {}).get("device") or meta.get("device") or "REGF1"
     return DEVICE_SOLVER_DATA_DIRS[device][noise]
 

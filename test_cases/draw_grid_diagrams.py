@@ -51,38 +51,66 @@ def draw_grid(grid):
         axis.text(x - 0.12 if label_on_left else x + 0.12, y - 0.55, label, fontsize=8.5, color=MUTED_COLOR, va="center",
                   ha="right" if label_on_left else "left")
 
+    # circuits out of service per corridor: grid["circuits_out"] (random grids), else the hand-written keys
+    out = dict(grid.get("circuits_out", {}))
+    out.setdefault("5-6", grid.get("out_of_service_5_6", 0))
+    out.setdefault("7-8", grid.get("tie_out_of_service", 0))
+
+    def corridor_label(name, count, default):
+        if name in grid.get("labels", {}):
+            return grid["labels"][name]
+        if not out.get(name):
+            return default
+        return f"{count - out[name]} of {count} in service"            # the dashed circuit is out
     draw_circuits(BUS_X[1], BUS_X[5], MAIN_ROW_Y, 1)
-    draw_circuits(BUS_X[5], BUS_X[6], MAIN_ROW_Y, 2, grid.get("label_5_6", "2 circuits"),
-                  out_of_service=grid.get("out_of_service_5_6", 0))
-    draw_circuits(BUS_X[6], BUS_X[7], MAIN_ROW_Y, 2, "2 circuits")
-    draw_circuits(BUS_X[7], BUS_X[8], MAIN_ROW_Y, 3, grid["tie_label"], out_of_service=grid.get("tie_out_of_service", 0))
-    draw_circuits(BUS_X[8], BUS_X[9], MAIN_ROW_Y, 2, "2 circuits")
-    draw_circuits(BUS_X[9], BUS_X[10], MAIN_ROW_Y, 2, "2 circuits")
+    draw_circuits(BUS_X[5], BUS_X[6], MAIN_ROW_Y, 2, grid.get("label_5_6") or corridor_label("5-6", 2, "2 circuits"),
+                  out_of_service=out.get("5-6", 0))
+    draw_circuits(BUS_X[6], BUS_X[7], MAIN_ROW_Y, 2, corridor_label("6-7", 2, "2 circuits"), out_of_service=out.get("6-7", 0))
+    draw_circuits(BUS_X[7], BUS_X[8], MAIN_ROW_Y, 3, grid.get("tie_label") or corridor_label("7-8", 3, "tie line, 3 circuits"),
+                  out_of_service=out.get("7-8", 0))
+    draw_circuits(BUS_X[8], BUS_X[9], MAIN_ROW_Y, 2, corridor_label("8-9", 2, "2 circuits"), out_of_service=out.get("8-9", 0))
+    draw_circuits(BUS_X[9], BUS_X[10], MAIN_ROW_Y, 2, corridor_label("9-10", 2, "2 circuits"), out_of_service=out.get("9-10", 0))
     draw_circuits(BUS_X[10], BUS_X[4], MAIN_ROW_Y, 1)
     for bus in (1, 5, 6, 7, 8, 9, 10, 4):
         draw_bus(BUS_X[bus], MAIN_ROW_Y, bus)
     axis.plot([BUS_X[1] - 0.9, BUS_X[1]], [MAIN_ROW_Y, MAIN_ROW_Y], color=INK_COLOR, lw=1.4)
     draw_generator(BUS_X[1] - 1.26, MAIN_ROW_Y, "G1", "slack")
-    axis.plot([BUS_X[4], BUS_X[4] + 0.9], [MAIN_ROW_Y, MAIN_ROW_Y], color=INK_COLOR, lw=1.4)
-    draw_generator(BUS_X[4] + 1.26, MAIN_ROW_Y, "G4", grid["g4"])
-    axis.plot([BUS_X[6], BUS_X[6]], [MAIN_ROW_Y - 0.55, 1.5], color=INK_COLOR, lw=1.4)        # generator 2 below bus 6
-    axis.plot([BUS_X[6] - 0.35, BUS_X[6] + 0.35], [1.2, 1.2], color=INK_COLOR, lw=3.5)
-    axis.text(BUS_X[6] + 0.42, 1.2, "2", fontsize=11, weight="bold", va="center")
-    axis.plot([BUS_X[6], BUS_X[6]], [1.2, 0.75], color=INK_COLOR, lw=1.4)
-    draw_generator(BUS_X[6], 0.39, "G2", grid["g2"])
+    # the machines: G2 hangs below bus 6 (its own bus 2), G3 below bus 9 (bus 3), G4 to the right of bus 4.
+    # The inverter-based unit takes one of those slots (grid["device_slot"], default 3, as in every fixed grid).
+    slot = int(grid.get("device_slot", 3))
 
-    axis.plot([BUS_X[9], BUS_X[9]], [MAIN_ROW_Y - 0.55, 1.5], color=DEVICE_COLOR, lw=1.6)    # the device below bus 9
-    axis.plot([BUS_X[9] - 0.35, BUS_X[9] + 0.35], [1.2, 1.2], color=INK_COLOR, lw=3.5)
-    axis.text(BUS_X[9] + 0.42, 1.2, "3", fontsize=11, weight="bold", va="center")
-    axis.plot([BUS_X[9], BUS_X[9]], [1.2, 0.8], color=DEVICE_COLOR, lw=1.6)
-    axis.add_patch(FancyBboxPatch((BUS_X[9] - 0.95, -0.1), 1.9, 0.9, boxstyle="round,pad=0.05", fc="#e8f4ec",
-                                  ec=DEVICE_COLOR, lw=1.8))
-    axis.text(BUS_X[9], 0.5, "Inverter-based\nunit", ha="center", va="center", fontsize=9, color=DEVICE_COLOR, weight="bold")
-    axis.text(BUS_X[9], -0.25, grid["device"], ha="center", va="top", fontsize=8.5, color=DEVICE_COLOR)
-    axis.text(BUS_X[9] + 1.15, 0.35, "measured at bus 3:\nP, Q, V, θ\n+ voltage setpoint log", fontsize=8.5,
-              color=DEVICE_COLOR, va="center")
+    def draw_hanging_bus(x, number, color):
+        axis.plot([x, x], [MAIN_ROW_Y - 0.55, 1.5], color=color, lw=1.6 if color == DEVICE_COLOR else 1.4)
+        axis.plot([x - 0.35, x + 0.35], [1.2, 1.2], color=INK_COLOR, lw=3.5)
+        axis.text(x + 0.42, 1.2, str(number), fontsize=11, weight="bold", va="center")
+
+    def draw_device(x, top, terminal_bus, text_side):
+        axis.plot([x, x], [top, 0.8], color=DEVICE_COLOR, lw=1.6)
+        axis.add_patch(FancyBboxPatch((x - 0.95, -0.1), 1.9, 0.9, boxstyle="round,pad=0.05", fc="#e8f4ec",
+                                      ec=DEVICE_COLOR, lw=1.8))
+        axis.text(x, 0.5, "Inverter-based\nunit", ha="center", va="center", fontsize=9, color=DEVICE_COLOR, weight="bold")
+        axis.text(x, -0.25, grid["device"], ha="center", va="top", fontsize=8.5, color=DEVICE_COLOR)
+        axis.text(x + 1.15 * text_side, 0.35, f"measured at bus {terminal_bus}:\nP, Q, V, θ\n+ voltage setpoint log",
+                  fontsize=8.5, color=DEVICE_COLOR, va="center", ha="left" if text_side > 0 else "right")
+
+    for machine, bus_x in ((2, BUS_X[6]), (3, BUS_X[9])):
+        draw_hanging_bus(bus_x, machine, DEVICE_COLOR if machine == slot else INK_COLOR)
+        if machine == slot:
+            draw_device(bus_x, 1.2, machine, +1 if machine == 3 else -1)
+        else:
+            axis.plot([bus_x, bus_x], [1.2, 0.75], color=INK_COLOR, lw=1.4)
+            draw_generator(bus_x, 0.39, f"G{machine}", grid[f"g{machine}"])
+    if slot == 4:
+        axis.plot([BUS_X[4], BUS_X[4]], [MAIN_ROW_Y - 0.55, 1.2], color=DEVICE_COLOR, lw=1.6)
+        draw_device(BUS_X[4], 1.2, 4, +1)
+    else:
+        axis.plot([BUS_X[4], BUS_X[4] + 0.9], [MAIN_ROW_Y, MAIN_ROW_Y], color=INK_COLOR, lw=1.4)
+        draw_generator(BUS_X[4] + 1.26, MAIN_ROW_Y, "G4", grid["g4"])
     for bus, label in grid["loads"].items():
-        draw_load(BUS_X[bus], MAIN_ROW_Y - 0.55, label, label_on_left=(bus == 9))
+        if bus == 9 and "device_slot" in grid:       # random grids: beside the line down to bus 3, clear of L8's label
+            draw_load(BUS_X[bus] + 0.3, MAIN_ROW_Y - 0.55, label)
+        else:
+            draw_load(BUS_X[bus], MAIN_ROW_Y - 0.55, label, label_on_left=(bus == 9))
     for x_from, x_to, name in ((BUS_X[1] - 1.9, BUS_X[7] + 0.3, "Area 1"), (BUS_X[8] - 0.3, BUS_X[4] + 1.9, "Area 2")):
         axis.plot([x_from, x_from, x_to, x_to], [5.0, 5.15, 5.15, 5.0], color=MUTED_COLOR, lw=1)
         axis.text((x_from + x_to) / 2, 5.25, name, ha="center", fontsize=11, color=INK_COLOR)

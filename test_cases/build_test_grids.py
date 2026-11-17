@@ -221,11 +221,12 @@ def check_sandbox_names(sandbox_dir):
             assert not SIMULATOR_AND_DEVICE_NAMES.search(path.read_text()), f"forbidden word in {path}"
 
 
-def write_grid_files(key, grid_spec, simulations, grid_dir):
-    """Every file of one grid, from its runs' simulations. Returns the answer key."""
+def write_grid_files(key, grid_spec, simulations, grid_dir, plots=True):
+    """Every file of one grid, from its runs' simulations. Returns the answer key. plots=False skips holdout/plots/
+    (the random grid pool, test_cases/build_grid_pool.py)."""
     case, device = grid_spec["case"], grid_spec["device_under_test"]
     holdout_dir, sandbox_dir = grid_dir / "holdout", grid_dir / "sandbox_data"
-    (holdout_dir / "plots").mkdir(parents=True, exist_ok=True)
+    (holdout_dir / "plots").mkdir(parents=True, exist_ok=True) if plots else holdout_dir.mkdir(parents=True, exist_ok=True)
     from scorer.grids.kundur_family_builder import switching_times
     hashes, signal_to_noise, limiter_ranges, operating_points, sandbox_runs = {}, {}, {}, {}, {}
     for run_index, (run_name, run) in enumerate(case["runs"].items()):
@@ -234,8 +235,9 @@ def write_grid_files(key, grid_spec, simulations, grid_dir):
         signal_to_noise[run_name] = {signal: float(np.ptp(clean[signal]) / NOISE_SIGMAS[signal]) for signal in NOISE_SIGMAS}
         operating_points[run_name] = [float(clean["V"][0]), 0.0, float(clean["P"][0]), float(clean["Q"][0])]
         hashes[f"holdout/{run_name}_clean.csv"] = write_recording(holdout_dir / f"{run_name}_clean.csv", times, clean)
-        plot_recording(holdout_dir / "plots" / f"{run_name}.png", run_name, times, clean,
-                       noisy if run["split"] != "holdout" else None, switching_times(case, run_name))
+        if plots:
+            plot_recording(holdout_dir / "plots" / f"{run_name}.png", run_name, times, clean,
+                           noisy if run["split"] != "holdout" else None, switching_times(case, run_name))
         if run["split"] in ("train", "val"):
             split_dir = sandbox_dir / run["split"]
             split_dir.mkdir(parents=True, exist_ok=True)
@@ -279,7 +281,7 @@ def write_grid_files(key, grid_spec, simulations, grid_dir):
         "runs": {run_name: {"split": run["split"], "op": run["op"], "tf": run["tf"], "events": operator_log(run["events"])}
                  for run_name, run in case["runs"].items()},
         "snr_ptp_over_sigma": signal_to_noise, "limiter_ranges": limiter_ranges, "sha256": hashes,
-        "regenerate": "python test_cases/build_test_grids.py --grids " + key,
+        "regenerate": key if key.startswith("python ") else "python test_cases/build_test_grids.py --grids " + key,
     }
     (holdout_dir / "answer_key.json").write_text(json.dumps(answer_key, indent=2, default=float))
     return answer_key

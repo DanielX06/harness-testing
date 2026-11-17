@@ -155,6 +155,14 @@ Built on the Mac on Nov 10: no limiter binds in any of the 18 runs and no channe
 
 The shared errors cost REGF2 what they cost REGF1, grid for grid, so B2 and M2 judge the same way B and M do. Getting the frequency law wrong (fitting REGF1's droop structure to the VSM unit) costs about 0.1, mostly in FR: visible, but far below the 0.5 to 0.9 that the Haiku-low baselines score, so most of a solver's error on REGF2 will come from the same places as on REGF1. No EIG scan has been done for B2 and M2.
 
+## Grids A3, B3 and M3: the held-out REGF3 unit (Nov 15)
+
+Grids A, B and M with the REGF3 (dVOC) unit, parameters drawn the same way with seed 2. REGF3 is the held-out device: `HELD_OUT_DEVICES` in `../common/project_paths.py` keeps it out of every RSI loop. Under ANDES's REGF3 the voltage setpoint barely enters the unit (its dVOC gain is about 1e-10) and Q returns to Q0 in steady state, so the vref runs are flat and flat scores about 0.79 here, not 1. The truth scores 0 on B3 and M3 (`grid_B3_check.json`, `grid_M3_check.json`). Results: `../results/regf3_heldout/`.
+
+## The random grid pool (Nov 17)
+
+`sample_random_grids.py` draws a training grid X (grid A's twelve runs) and a scoring grid Y (grid B's three) from (device, seed): the unit in generator 2's, 3's or 4's place, one circuit out in up to two corridors, loads and dispatch varied, and which load, circuit, generator and bus each event hits. Its docstring has the ranges. `build_grid_pool.py` simulates draws, throws out any where the power flow or a run fails or a limiter binds, and writes the kept ones to `../grid_pool/<device>/<device>_<seed>/` with a scorer config (Y selects, the fixed M or M2 monitors, X's held-out runs). The pool is not in git (about 35 MB a draw) and is rebuilt exactly from its seeds. `rsi/rsi_experiment.py --grid-pool grid_pool` gives every pair its own draw; start such a loop from `../harnesses/wecc_docs_any_grid/`.
+
 ## Limits worth knowing
 
 1. **Only voltage-reference steps.** REGF1 in ANDES has no active-power setpoint or frequency reference that acts during a run. `Pref` is used only at initialization, and a step on `Paux` feeds an integrator, so P runs away until the frequency limit. The P-setpoint and frequency-reference parts of MOD-026/027 testing can't be reproduced without editing the device model.

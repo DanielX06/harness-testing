@@ -104,14 +104,14 @@ from common.run_provenance import git_commit  # noqa: E402
 from rsi.experiment_archive import ArchiveError, archive, restore  # noqa: E402
 from rsi.harness_proposal import propose_candidate  # noqa: E402
 from rsi.updater_context import (FR_MIN_RUNS_HISTORY, frequency_response_by_unit, hidden_score_names_pattern,  # noqa: E402
-                                 read_history)
+                                 read_history, set_unit_data_dirs)
 from solver.python_sandbox import SandboxUnavailable  # noqa: E402
 from solver.solver_run import write_json_atomically  # noqa: E402
 
 RESUMABLE_SETTINGS = ("iters", "patience", "max_usd", "parallel", "workers", "updater_max_usd", "updater_max_turns",
                       "max_resumes")
 # settings added after the first experiments, and the value an experiment that predates each one ran with
-SETTINGS_BEFORE_THEY_EXISTED = {"updater_python": False, "updater_max_turns": 20, "devices": ["REGF1"]}
+SETTINGS_BEFORE_THEY_EXISTED = {"updater_python": False, "updater_max_turns": 20, "devices": ["REGF1"], "grid_pool": None}
 WHY_NOT_RUN = {"no_change": "the updater changed nothing", "no_finish": "the updater did not call finish",
                "over_budget": "the updater ran past its budget",
                "context_full": "the updater's conversation outgrew its context before it called finish"}
@@ -156,6 +156,8 @@ class ExperimentSettings:
     max_resumes: int = 2                    # a run that has failed more often than this is replaced
     max_failures_in_a_row: int = 6          # this many failed sessions with no run finishing: stop the loop
     devices: list = field(default_factory=lambda: ["REGF1"])    # the units the runs take turns on, pair by pair
+    grid_pool: str | None = None            # the random grid pool (test_cases/build_grid_pool.py): each pair gets
+                                            # its own draw, so no run's training or selection grid repeats a fixed one
 
     def device_for(self, number):
         """The device of pair (or baseline run) number, counting from 1: the devices take turns."""
@@ -167,6 +169,11 @@ class ExperimentSettings:
 
     @property
     def scorer_configs(self):
+        """One config per device. On the random grid pool, each device's first draw's config stands for all of its
+        draws (every draw names its grids and runs the same way), for the names the updater must not see."""
+        if self.grid_pool:
+            return [os.path.join(self.grid_pool, pool_draws(self.grid_pool, device)[0]["folder"], "config_rsi.json")
+                    for device in self.devices]
         return [self.config_for(device) for device in self.devices]
 
     def problems(self):
@@ -195,6 +202,13 @@ class ExperimentSettings:
                 problems.append(f"--{name.replace('_', '-')} must be at least 1")
         if not 0 < self.alpha < 1:
             problems.append("--alpha must be between 0 and 1")
+        if self.grid_pool:
+            if self.noise != "clean":
+                problems.append("--grid-pool keeps clean recordings only: use --noise clean")
+            for device in self.devices:
+                if device in DEVICE_SOLVER_DATA_DIRS and not pool_draws(self.grid_pool, device):
+                    problems.append(f"{self.grid_pool} has no draws for {device}; build them with "
+                                    f"test_cases/build_grid_pool.py --devices {device}")
         return problems
 
     def warnings(self):
@@ -205,6 +219,39 @@ class ExperimentSettings:
                 warnings.append(f"with {name} {count}, the smallest p a block can give is {1 / math.comb(2 * count, count):.3f}, "
                                 f"above --alpha {self.alpha}, so no candidate can pass. Use more pairs.")
         return warnings
+
+
+# ---- the random grid pool ------------------------------------------------------------------------------------------
+def pool_draws(pool_dir, device):
+    """The kept draws of a device in a random grid pool (its manifest), in seed order; [] if there are none."""
+    manifest = read_json_or_none(os.path.join(pool_dir, "manifest.json")) or {"draws": {}}
+    draws = [draw for draw in manifest["draws"].values() if draw["device"] == device]
+    return sorted(draws, key=lambda draw: draw["seed"])
+
+
+class GridAssignments:
+    """Which pool draw each (block, pair) runs on, saved in grid_assignments.json so a resumed loop reuses them. Both
+    arms of a pair share their draw. Each device's draws are used in a shuffled order fixed by the experiment's
+    folder name, every draw once before any is used again."""
+
+    def __init__(self, path, pool_dir, experiment_name, log=None):
+        self.path, self.pool_dir, self.experiment_name, self.log = path, pool_dir, experiment_name, log
+        self.assigned = read_json_or_none(path) or {}
+
+    def draw_for(self, block, pair, device):
+        key = f"{block}/{pair}"
+        if key not in self.assigned:
+            draws = pool_draws(self.pool_dir, device)
+            order = sorted(draws, key=lambda draw: draw["seed"])
+            random.Random(f"{self.experiment_name}:{device}").shuffle(order)
+            used = sum(1 for value in self.assigned.values() if value["device"] == device)
+            if used and used % len(order) == 0 and self.log:
+                self.log(f"   every {device} draw in the pool has been used once; starting over ({len(order)} draws)")
+            draw = order[used % len(order)]
+            self.assigned[key] = {"device": device, "draw": draw["folder"], "seed": draw["seed"]}
+            write_json_atomically(self.path, self.assigned)
+        folder = os.path.join(self.pool_dir, self.assigned[key]["draw"])
+        return os.path.join(folder, "X", "sandbox_data_clean"), os.path.join(folder, "config_rsi.json")
 
 
 # ---- files -----------------------------------------------------------------------------------------------------
@@ -322,9 +369,9 @@ class ExperimentFolder:
 
     def __init__(self, path):
         self.path = os.path.abspath(path)
-        for name in ("config", "state", "history", "blocks", "monitor", "cycles", "summary", "log", "lock"):
+        for name in ("config", "state", "history", "blocks", "monitor", "cycles", "summary", "log", "lock", "grids"):
             file_name = {"config": "config.json", "state": "state.json", "summary": "summary.md", "log": "loop.log",
-                         "lock": "loop.lock"}.get(name, f"{name}.jsonl")
+                         "lock": "loop.lock", "grids": "grid_assignments.json"}.get(name, f"{name}.jsonl")
             setattr(self, name, os.path.join(self.path, file_name))
         self.candidates_dir, self.runs_dir = os.path.join(self.path, "candidates"), os.path.join(self.path, "runs")
 
@@ -458,12 +505,16 @@ class SolverLauncher:
     def __init__(self, settings):
         self.settings = settings
 
-    def start_new(self, block_dir, labels, harness_dir, log_path):
+    def start_new(self, block_dir, labels, harness_dir, log_path, data_dir=None, config=None):
+        """data_dir, config: a random grid pool draw's training recordings and scorer config (default: the
+        device's fixed training grid and config)."""
         settings = self.settings
         device = labels.get("device", settings.devices[0])
         command = [sys.executable, str(SOLVER_RUN_SCRIPT), settings.solver_model, settings.solver_effort,
-                   "--harness", harness_dir, "--out", block_dir, "--config", settings.config_for(device),
+                   "--harness", harness_dir, "--out", block_dir, "--config", config or settings.config_for(device),
                    "--noise", settings.noise, "--device", device]
+        if data_dir:
+            command += ["--data-dir", data_dir]
         command += [part for key, value in labels.items() for part in ("--label", f"{key}={value}")]
         if settings.workers:
             command += ["--workers", str(settings.workers)]
@@ -487,6 +538,8 @@ class BlockRunner:
         self.settings, self.folder, self.log = settings, folder, log
         self.launcher = launcher or SolverLauncher(settings)
         self.sleep, self.poll_s, self.launch_gap_s, self.stop_grace_s = sleep, poll_s, launch_gap_s, stop_grace_s
+        self.grids = (GridAssignments(folder.grids, settings.grid_pool, os.path.basename(folder.path), log)
+                      if settings.grid_pool else None)
 
     def run_slots(self, block, slots, harnesses):
         """slots: [(pair, arm)] in launch order. harnesses: {arm: (harness name, harness folder)}.
@@ -574,7 +627,10 @@ class BlockRunner:
                      f"{latest.failures} failures) with a new run")
         harness_name, harness_dir = harnesses[arm]
         labels = {"block": block, "pair": pair, "arm": arm, "harness": harness_name, "device": self.settings.device_for(pair)}
-        return self.launcher.start_new(block_dir, labels, harness_dir, log_path)
+        if self.grids is None:
+            return self.launcher.start_new(block_dir, labels, harness_dir, log_path)
+        data_dir, config = self.grids.draw_for(block, pair, labels["device"])
+        return self.launcher.start_new(block_dir, labels, harness_dir, log_path, data_dir=data_dir, config=config)
 
     def _runs_by_slot(self, block):
         runs_by_slot = {}
@@ -1001,8 +1057,17 @@ class RsiExperiment:
             self.log(f"   {name} was interrupted before its proposal was saved; moved to {os.path.basename(aside)}")
         self.log(f"iteration {iteration}: proposing {name} from {current}")
         settings = self.settings
+        runs_of_current = self.folder.scored_runs_of_harness(current)
+        if settings.grid_pool:            # one recent run's grid per unit stands in for the many the solver had
+            examples = {}
+            for run_dir in runs_of_current:
+                meta = read_json_or_none(os.path.join(run_dir, "meta.json")) or {}
+                device = (meta.get("labels") or {}).get("device") or meta.get("device")
+                if meta.get("data") and device in UNIT_LABELS:
+                    examples[UNIT_LABELS[device]] = meta["data"]
+            set_unit_data_dirs(examples)
         try:
-            return propose_candidate(self.folder.scored_runs_of_harness(current), self.folder.harness_dir(current),
+            return propose_candidate(runs_of_current, self.folder.harness_dir(current),
                                      candidate_dir, scope=settings.scope, history=read_history(self.folder.history),
                                      model=settings.updater_model, effort=settings.updater_effort,
                                      max_usd=settings.updater_max_usd, smoke=settings.smoke,
@@ -1012,6 +1077,8 @@ class RsiExperiment:
                                      max_turns=settings.updater_max_turns)
         except SandboxUnavailable as error:
             raise InfrastructureError(f"the candidate's checker could not run: {error}. Start Docker, then --resume.") from error
+        finally:
+            set_unit_data_dirs({})
 
     def _attempt(self, iteration, name, current, proposal):
         """Run the candidate against the current harness and decide. Returns (history record, cycle record)."""
@@ -1232,6 +1299,8 @@ def parse_arguments(argv=None):
                              "other devices use their own config_rsi (common/project_paths.py)")
     parser.add_argument("--devices", default=",".join(defaults.devices),
                         help="comma-separated units the pairs take turns on, e.g. REGF1,REGF2 (default REGF1)")
+    parser.add_argument("--grid-pool", default=None, help="random grid pool folder (test_cases/build_grid_pool.py, "
+                        "default location grid_pool/): every pair runs on its own draw instead of grids A, B (A2, B2)")
     parser.add_argument("--workers", type=int, default=None, help="ANDES simulations at once when a run is scored")
     parser.add_argument("--patience", type=int, default=defaults.patience,
                         help="stop after this many attempts in a row that were not kept")
@@ -1264,6 +1333,8 @@ def parse_arguments(argv=None):
     values["solver_effort"] = resolve_effort(values["solver_effort"])
     for key in ("start", "scorer_config"):
         values[key] = os.path.abspath(values[key])
+    if values["grid_pool"]:
+        values["grid_pool"] = os.path.abspath(values["grid_pool"])
     settings = ExperimentSettings(**values)
     for problem in settings.problems():
         parser.error(problem)
