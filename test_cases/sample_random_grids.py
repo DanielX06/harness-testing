@@ -10,14 +10,23 @@ grids A, B and M are built from, varied within these ranges (decided Nov 17, 202
 
   device slot     the unit takes generator 2's, 3's or 4's place (generator 1 is the slack and stays)
   circuits out    each parallel corridor (5-6, 6-7, 7-8, 8-9, 9-10) has one circuit out with probability 1/4,
-                  at most two corridors per grid, so every corridor keeps a circuit in service
+                  at most one corridor per grid (op3 and the trips add one more), so every corridor keeps a
+                  circuit in service
   loads           bus 7 and bus 8 loads at grid A's values x U(0.8, 1.2); one more load of U(0.2, 3.0) pu
                   (20 to 300 MW) at bus 9 or 10
-  dispatch        the unit at U(0.45, 0.8) of its 900 MVA rating; the other two non-slack generators at grid A's
-                  dispatch x U(0.85, 1.15); every voltage schedule U(0.99, 1.03); a draw whose slack generator
-                  would land outside 250 to 800 MW is drawn again
-  events          which load steps, which circuit trips (only from a corridor with two or more in service),
-                  which generator trips (never the unit's slot) and where the fault is (buses 5 to 10)
+  dispatch        the unit at U(0.45, 0.7) of its 900 MVA rating; the other two non-slack generators at grid A's
+                  dispatch x U(0.85, 1.15); the unit's voltage schedule U(0.99, 1.02), the generators' 1.00 pu as in
+                  grid A; a draw whose slack generator would land outside 250 to 800 MW is drawn again
+  events          which load steps, which circuit trips (only from a corridor with two or more in service), where
+                  the fault is (buses 5 to 10), and which generator trips: never the unit's slot, and one small
+                  enough that the unit's share of it keeps the unit under 90% of its rating (unit P + 0.45 x
+                  tripped P <= 810 MW; on grid A the unit picked up about 35% of the 400 MW trip). With the unit in
+                  generator 2's slot, generator 3 or 4 is re-dispatched to 350 to 500 MW to be the one that trips
+
+Sampler v1 (Nov 17) drew every generator's voltage schedule independently in U(0.99, 1.03), the unit up to 0.8 of its
+rating, up to two corridors out and any generator trip. 23 of its first 25 draws were thrown out: the unit's Q
+limiter bound in 37 runs (mismatched schedules left it carrying 200 to 400 Mvar before any event), its P limiter in
+8 (700 MW trips), and 27 simulations failed. v2 is the fix.
 
 A draw is a pure function of (device, seed). build_grid_pool.py simulates it, throws out draws where the power flow
 or a simulation fails or a limiter binds, and keeps the rest. The unit's parameters are the ones in its training
@@ -35,20 +44,21 @@ GRID_SPECS_DIR = TEST_CASES_DIR / "grid_specs"
 
 CORRIDORS = {"5-6": ["Line_0", "Line_1"], "6-7": ["Line_2", "Line_3"], "7-8": ["Line_4", "Line_5", "Line_6"],
              "8-9": ["Line_7", "Line_8"], "9-10": ["Line_9", "Line_10"]}
-CORRIDOR_OUT_PROBABILITY, MAX_CORRIDORS_OUT = 0.25, 2
+CORRIDOR_OUT_PROBABILITY, MAX_CORRIDORS_OUT = 0.25, 1
 BASE_DISPATCH = {2: 4.0, 3: 7.0, 4: 7.0}               # pu on 100 MVA: grid A's op1 (area 1 re-dispatched)
 BASE_LOADS = {"PQ_0": 8.59, "PQ_1": 14.25}             # bus 7, bus 8: grid A's op1
 LOAD_BUS = {"PQ_0": 7, "PQ_1": 8, "PQ_2": 10, "PQ_3": 9}   # as build_test_grids.py names them
 EXTRA_LOAD_AT_BUS = {9: "PQ_3", 10: "PQ_2"}
 DEVICE_SLOTS = (2, 3, 4)
 DEVICE_RATING_PU = 9.0                                 # 900 MVA on the 100 MVA system base
-DEVICE_SHARE_RANGE = (0.45, 0.8)
+DEVICE_SHARE_RANGE = (0.45, 0.7)
 OTHER_DISPATCH_FACTOR, LOAD_FACTOR, EXTRA_LOAD_PU = (0.85, 1.15), (0.8, 1.2), (0.2, 3.0)
-VOLTAGE_SCHEDULE = (0.99, 1.03)
+VOLTAGE_SCHEDULE = (0.99, 1.02)                    # the unit's; the generators stay at 1.00 pu
+TRIP_SHARE, TRIP_HEADROOM_PU, SMALL_TRIP_PU = 0.45, 8.1, (3.5, 5.0)
 SLACK_RANGE_PU, ESTIMATED_LOSSES_PU = (2.5, 8.0), 0.4
 TRAINING_GRID_OF_DEVICE = {"REGF1": "A", "REGF2": "A2"}
 FAULT_BUSES = (5, 6, 7, 8, 9, 10)
-SAMPLER_VERSION = 1                                    # bump when a change would make a seed give a different grid
+SAMPLER_VERSION = 2                                    # bump when a change would make a seed give a different grid
 
 
 def device_under_test(device):
@@ -78,13 +88,23 @@ def slack_estimate(operating_point):
     return load + ESTIMATED_LOSSES_PU - generation
 
 
-def _sample_operating_point(rng, slot, extra_load, lines_out):
+def _sample_operating_point(rng, slot, extra_load, lines_out, trip=None):
+    """trip: the generator that will trip in this operating point, or None. Its dispatch is kept small enough that
+    the unit's share of the loss leaves it under 90% of its rating (re-dispatched to 350 to 500 MW if it is one of
+    the 700 MW machines)."""
     for _ in range(1000):
         pv = {}
         for machine in DEVICE_SLOTS:
-            p0 = (rng.uniform(*DEVICE_SHARE_RANGE) * DEVICE_RATING_PU if machine == slot
-                  else BASE_DISPATCH[machine] * rng.uniform(*OTHER_DISPATCH_FACTOR))
-            pv[str(machine)] = {"p0": round(float(p0), 4), "v0": round(float(rng.uniform(*VOLTAGE_SCHEDULE)), 4)}
+            if machine == slot:
+                p0 = rng.uniform(*DEVICE_SHARE_RANGE) * DEVICE_RATING_PU
+            elif machine == trip and BASE_DISPATCH[machine] > SMALL_TRIP_PU[1]:
+                p0 = rng.uniform(*SMALL_TRIP_PU)
+            else:
+                p0 = BASE_DISPATCH[machine] * rng.uniform(*OTHER_DISPATCH_FACTOR)
+            v0 = rng.uniform(*VOLTAGE_SCHEDULE) if machine == slot else 1.0
+            pv[str(machine)] = {"p0": round(float(p0), 4), "v0": round(float(v0), 4)}
+        if trip is not None and pv[str(slot)]["p0"] + TRIP_SHARE * pv[str(trip)]["p0"] > TRIP_HEADROOM_PU:
+            continue
         pq = {load: {"p0": round(float(base * rng.uniform(*LOAD_FACTOR)), 4)} for load, base in BASE_LOADS.items()}
         pq[extra_load[0]] = {"p0": round(float(rng.uniform(*EXTRA_LOAD_PU)), 4)}
         point = {"pv": pv, "pq": pq, "lines_out": sorted(lines_out)}
@@ -155,18 +175,18 @@ def sample_pair(device, seed):
     # X: the training grid, three operating points like grid A's
     slot, extra_load, out = _sample_network(rng)
     lines_out = sorted(out.values())
-    op1 = _sample_operating_point(rng, slot, extra_load, lines_out)
+    trip = 2 if slot != 2 else int(rng.choice([3, 4]))
+    op1 = _sample_operating_point(rng, slot, extra_load, lines_out, trip=trip)
     op2 = copy.deepcopy(op1)
     old_p, new_p = op1["pv"][str(slot)]["p0"], round(float(rng.uniform(*DEVICE_SHARE_RANGE) * DEVICE_RATING_PU), 4)
     balancing = int(rng.choice([machine for machine in DEVICE_SLOTS if machine != slot]))
     op2["pv"][str(slot)]["p0"] = new_p
     op2["pv"][str(balancing)]["p0"] = round(float(np.clip(op1["pv"][str(balancing)]["p0"] + old_p - new_p, 1.0, 8.5)), 4)
-    op2["pv"][str(slot)]["v0"] = round(min(op1["pv"][str(slot)]["v0"] + 0.01, 1.04), 4)
+    op2["pv"][str(slot)]["v0"] = round(min(op1["pv"][str(slot)]["v0"] + 0.01, 1.03), 4)
     op3 = copy.deepcopy(op1)
     op3["lines_out"] = sorted(lines_out + [str(rng.choice(trippable_circuits(lines_out)))])
     op3["pq"]["PQ_1"]["p0"] = round(op3["pq"]["PQ_1"]["p0"] + 1.0, 4)
     loads = sorted(op1["pq"])
-    other_machines = [machine for machine in DEVICE_SLOTS if machine != slot]
     up_or_down = [(0.88, 0.94), (1.06, 1.12)]
     runs = {
         "X_amb_op1": {"split": "train", "op": "op1", "tf": 60.0, "events": [_ambient(rng, loads, 0.01, 60.0)]},
@@ -176,7 +196,7 @@ def sample_pair(device, seed):
         "X_vref_op3": {"split": "train", "op": "op3", "tf": 45.0, "events": [_ambient(rng, loads, 0.003, 45.0)]
                        + _vref_steps((5.0, 15.0, 25.0, 35.0), (0.01, -0.01, -0.01, 0.01))},
         "X_gentrip_op1": {"split": "train", "op": "op1", "tf": 40.0, "events": [
-            _ambient(rng, loads, 0.003, 40.0), {"kind": "gen_trip", "t": 5.0, "syn": int(rng.choice(other_machines))}]},
+            _ambient(rng, loads, 0.003, 40.0), {"kind": "gen_trip", "t": 5.0, "syn": trip}]},
         "X_load_op2": {"split": "train", "op": "op2", "tf": 40.0, "events": [
             _ambient(rng, loads, 0.003, 40.0), _load_step(rng, loads, 5.0, up_or_down)]},
         "X_fault_op1": {"split": "train", "op": "op1", "tf": 30.0, "events": [

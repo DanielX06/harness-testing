@@ -52,8 +52,11 @@ def git_commit():
 
 
 def simulate(job):
-    """(key, run name, simulation or None, error or None) for one run of one grid of one draw."""
-    key, grid_spec, run_name = job
+    """(key, run name, simulation or None, error or None) for one run of one grid of one draw. A run whose draw has
+    already lost another run is skipped: the draw is thrown out anyway."""
+    key, grid_spec, run_name, failed_draws = job
+    if key[0] in failed_draws:
+        return key, run_name, None, "skipped"
     try:
         return key, run_name, build_test_grids.simulate_run((grid_spec, run_name)), None
     except Exception as error:
@@ -143,7 +146,14 @@ def build(devices, pairs, workers, pool_dir, batch_size):
         for line in rejected_path.read_text().splitlines():
             record = json.loads(line)
             rejected[(record["device"], record["seed"])] = record
-    with multiprocessing.get_context("spawn").Pool(workers) as process_pool:
+    versions = {draw.get("sampler_version") for draw in manifest["draws"].values()} | \
+               {record.get("sampler_version", 1) for record in rejected.values()}
+    if versions - {sample_random_grids.SAMPLER_VERSION}:
+        sys.exit(f"{pool_dir} holds draws from sampler version {sorted(versions)}, not "
+                 f"{sample_random_grids.SAMPLER_VERSION}: give a new folder with --out, or move this one aside")
+    context = multiprocessing.get_context("spawn")
+    failed_draws = context.Manager().dict()
+    with context.Pool(workers) as process_pool:
         for device in devices:
             kept = [draw for draw in manifest["draws"].values() if draw["device"] == device]
             seed = 0
@@ -155,20 +165,24 @@ def build(devices, pairs, workers, pool_dir, batch_size):
                         batch.append(seed)
                     seed += 1
                 started = time.monotonic()
+                failed_draws.clear()                    # seeds count from 0 for each device
                 specs = {s: dict(zip(("X", "Y", "summary"), sample_random_grids.sample_pair(device, s))) for s in batch}
-                jobs = [((s, which), specs[s][which], run_name) for s in batch for which in ("X", "Y")
+                jobs = [((s, which), specs[s][which], run_name, failed_draws) for s in batch for which in ("X", "Y")
                         for run_name in specs[s][which]["case"]["runs"]]
                 jobs.sort(key=lambda job: -job[1]["case"]["runs"][job[2]]["tf"])
                 results, errors = {s: {"X": {}, "Y": {}} for s in batch}, {s: [] for s in batch}
                 for (s, which), run_name, simulation, error in process_pool.imap_unordered(simulate, jobs):
                     if error:
-                        errors[s].append(f"{which} {run_name}: {error}")
+                        failed_draws[s] = True
+                        if error != "skipped":
+                            errors[s].append(f"{which} {run_name}: {error}")
                     else:
                         results[s][which][run_name] = simulation
                 for s in batch:
                     key = f"{device.lower()}_{s:04d}"
                     if errors[s]:
-                        record = {"device": device, "seed": s, "reasons": errors[s][:4], "summary": specs[s]["summary"]}
+                        record = {"device": device, "seed": s, "sampler_version": sample_random_grids.SAMPLER_VERSION,
+                                  "reasons": errors[s][:4], "summary": specs[s]["summary"]}
                         rejected[(device, s)] = record
                         with open(rejected_path, "a") as file:
                             file.write(json.dumps(record) + "\n")

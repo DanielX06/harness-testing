@@ -93,7 +93,8 @@ def simulate_run(job):
                                f"{PLL_DEFAULTS['Kpll']}, {PLL_DEFAULTS['Kipll']}; found {pll.n}")
     system.TDS.run()
     if system.TDS.busted or system.exit_code != 0 or system.dae.t < run["tf"] - 1e-9:
-        raise RuntimeError(f"{run_name}: the time-domain simulation failed at t={float(system.dae.t):.4f}")
+        raise RuntimeError(f"{run_name}: the time-domain simulation failed at t={float(system.dae.t):.4f} "
+                           f"(busted {bool(system.TDS.busted)}, exit code {system.exit_code})")
 
     device_model, series = getattr(system, model_name), system.dae.ts
     bus_position = system.Bus.idx.v.index(device_model.bus.v[0])
