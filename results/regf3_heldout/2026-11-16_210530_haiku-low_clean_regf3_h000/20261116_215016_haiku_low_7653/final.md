@@ -1,0 +1,42 @@
+I saved the model to `submission.json`. It passes the checker on both validation recordings (starts at rest, outputs match P0 and Q0 at t=0). I did not run a full validation-error comparison beyond the open-loop residuals below, and I did not run the frequency-response or droop checks.
+
+**Model (WECC droop-type structure, reduced):** the device is a voltage source E behind a reactance XL, with E at angle δ.
+
+- Filters: Pm, Qm, Vm, each a first-order lag on the device's own P, Q and V (TPf, TQf, TVf).
+- Frequency droop: dδ/dt = ω0·mp·(P0 − Pm). No overload limiter.
+- Voltage loop: Vcmd = Vset + mq·(Q0 − Qm). Then E = kpv·(Vcmd − Vm) + xv, with dxv/dt = kiv·(Vcmd − Vm). No E limits.
+- Outputs: P = V·E·sin(δ − θ)/XL and Q = V·(E·cos(δ − θ) − V)/XL.
+- Initial states come from the operating point: E0 = |V0 + jXL·(P0 − jQ0)/V0| and δ0 = θ0 + the angle of that phasor. At t = 0 every rhs is zero and P = P0, Q = Q0.
+
+**Fitted parameters** (open-loop replay, measured V, θ, Vset as inputs):
+- XL = 0.40 (at its upper bound).
+- mp = 0.054. This is well identified and matches the ambient estimate of dP/dω ≈ −15 to −18 pu.
+- mq = 30 (at its upper bound). The data show almost no steady-state Q response to Vset, so mq is poorly identified and only sets a very weak Vset→Q gain.
+- kpv = 0.056, kiv = 31.6 (at its upper bound), TVf = 0.10 (at its upper bound), TPf = 0.002, TQf = 0.0025. Filter constants and kiv trade off against one another; the voltage-loop dynamics are only roughly identified.
+
+**Fit quality:**
+- Ambient, load-step, line and both staged-test recordings are reproduced to about 0.0002–0.0010 pu RMS in P and Q.
+- The fault and generator-trip recordings fit poorly during the event, with errors up to 0.05 pu. The model has no transient current limit and no E limits, and the real device appears to clamp its current.
+- Closed loop on a Thevenin grid with 0.5 pu reactance (the scorer's approximate network), the model is stable for a 0.02 pu setpoint step and a 0.05 pu dispatch step. On a much weaker grid (1.0 pu) a dispatch step makes the voltage sag to about 0.82 pu, so the model is marginal there.
+
+**Caveats:** several parameters sit at their bounds (XL, mq, kiv, TVf), which suggests the true structure differs from this droop model. The voltage-loop behaviour in particular is only approximated. I did not add the transient current limit or E/Q limits, so large faults in the scorer will probably be the weakest part.
+
+```json
+{
+  "params": {"XL": 0.39999999999999974, "mp": 0.05416150659563938, "mq": 29.999999999754678, "kpv": 0.05564242579176584, "kiv": 31.62199758978602, "TPf": 0.002000000007055461, "TQf": 0.002534971427056651, "TVf": 0.09999999999959039, "w0": 376.99111843077515},
+  "defs": {
+    "Vcmd": "Vset + mq*(Q0 - Qm)",
+    "Eint": "kpv*(Vcmd - Vm) + xv",
+    "Pe": "V*Eint*sin(delta - theta)/XL",
+    "Qe": "V*(Eint*cos(delta - theta) - V)/XL"
+  },
+  "states": {
+    "Pm": {"rhs": "(Pe - Pm)/TPf", "init": "P0"},
+    "Qm": {"rhs": "(Qe - Qm)/TQf", "init": "Q0"},
+    "Vm": {"rhs": "(V - Vm)/TVf", "init": "V0"},
+    "xv": {"rhs": "kiv*(Vcmd - Vm)", "init": "sqrt((V0 + XL*Q0/V0)**2 + (XL*P0/V0)**2)"},
+    "delta": {"rhs": "w0*mp*(P0 - Pm)", "init": "theta0 + atan2(XL*P0/V0, V0 + XL*Q0/V0)"}
+  },
+  "outputs": {"P": "Pe", "Q": "Qe"}
+}
+```

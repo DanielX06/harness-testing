@@ -1,0 +1,48 @@
+The submission is saved and passes the checker on both validation files. Its open-loop replay is close to the measured P and reasonably close for Q, but I stopped before adding a Q-frequency term, so Q error on the load test is about the size of Q's own variation.
+
+**Model (structure):** a first-order P droop on bus frequency, plus a first-order Q that depends on the terminal voltage only.
+
+- Frequency is estimated as the rate of the bus angle, using a lag state: `xa' = (theta − xa)/Tw`, with `wdev = (theta − xa)/Tw` in rad/s.
+- Active power: `Pss = P0 − wdev/(w0·mp) + bPV·(V − V0) + bPS·(Vset − V0)`, and `Pf' = (Pss − Pf)/TPf`. Output P = Pf.
+- Reactive power: `Qss = Q0 + bQV·(V − V0) + bQS·(Vset − V0)`, and `Qf' = (Qss − Qf)/TQf`. Output Q = Qf.
+- At t = 0 every rhs is zero, and P = P0, Q = Q0.
+
+**Identification:**
+- **mp ≈ 0.058 (well identified).** Regressing P on bus-angle rate gives dP/dω ≈ −18 consistently across all recordings, i.e. an effective droop of about 1/18. The earlier value of 0.01 was wrong by about 6×. This is the parameter that matters most for the frequency-response check.
+- **TPf ≈ 0.03 s and Tw ≈ 0.03 s (moderately identified).** They set how quickly P follows frequency. Their individual values trade off somewhat.
+- **TQf ≈ 0.4 s (moderately identified).** Q settles relatively slowly.
+- **bQV ≈ 0.003 pu/pu (poorly identified, small).** Q hardly depends on voltage in these recordings. The regression also gave a wider range, 0.00–0.02, depending on the recording.
+- **bQS ≈ 0, bPS ≈ 0, bPV ≈ 0.02 (poorly identified).** The staged voltage-reference tests show almost no response of Q, or of P, to the setpoint over 15 s windows. I rejected the standard voltage-loop structure (mq ≈ 0.05 with an integrator): it predicted Q moves of about 0.5 pu per 0.015 pu step, which the device does not show. The setpoint sensitivity is therefore essentially zero in this model. If the scorer's setpoint steps produce a slow Q response beyond these windows, this model will miss it.
+
+**Rejected candidates:**
+- The WECC droop model with mp = 0.01 and a voltage PI loop. It put P far too sensitive to angle and drove Q off by about 0.2 pu on validation.
+- A fixed internal voltage behind XL, with P driven by the angle difference. It fit Q well with XL = 0.3, but P still followed the bus angle, which the device does not do.
+
+**Not done:** the model has no fault current limit and no Q dependence on frequency (the regression suggested dQ/dω of about −0.3). Fault-period Q error is about 0.017 pu rms. The 0.4 s Q filter is also a guess constrained by only a few recordings.
+
+```json
+{
+  "params": {
+    "mp": 0.0583183074489443,
+    "Tw": 0.032448554123494906,
+    "TPf": 0.030832263247267715,
+    "TQf": 0.3970050187952025,
+    "bPV": 0.01902365140332017,
+    "bQV": 0.0030593083621055723,
+    "bQS": -0.0002390717296152262,
+    "bPS": 3.291680322380555e-05,
+    "w0": 376.99111843077515
+  },
+  "defs": {
+    "wdev": "(theta - xa)/Tw",
+    "Pss": "P0 - wdev/(w0*mp) + bPV*(V - V0) + bPS*(Vset - V0)",
+    "Qss": "Q0 + bQV*(V - V0) + bQS*(Vset - V0)"
+  },
+  "states": {
+    "xa": {"rhs": "(theta - xa)/Tw", "init": "theta0"},
+    "Pf": {"rhs": "(Pss - Pf)/TPf", "init": "P0"},
+    "Qf": {"rhs": "(Qss - Qf)/TQf", "init": "Q0"}
+  },
+  "outputs": {"P": "Pf", "Q": "Qf"}
+}
+```
