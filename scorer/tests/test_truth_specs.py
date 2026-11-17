@@ -71,4 +71,43 @@ check(0.05 < tint < 0.2, f"Tint = mf*wdrp = {tint:.4f} s, a VSM lag rather than 
 fast = TRUTH_SPEC_BUILDERS["REGF2"](regf2["params"], parameter_scale={"mf": 0.001})
 check(TerminalModel(fast).params["mf"] == regf2["params"]["mf"] * 0.001, "parameter_scale reaches REGF2's own parameters")
 
+# 4. REGF3 (dVOC): the held-out device sits in A3, B3 and M3; REGF1's 13 states plus the vref2 integrator
+regf3 = spec_params("A3")
+check(regf3["model"] == "REGF3" and all(spec_params(grid) == regf3 for grid in ("B3", "M3")),
+      "grids A3, B3 and M3 hold the same REGF3 unit")
+check(all(regf3["params"][name] != other["params"][name] for other in (regf1, regf2)
+          for name in ("wdrp", "Qdrp", "Tpm", "KPplim", "KIplim", "Tr")),
+      "REGF3's six drawn parameters differ from REGF1's and REGF2's (seed 2)")
+for inner_loop in ("full", "ideal"):
+    spec = TRUTH_SPEC_BUILDERS["REGF3"](regf3["params"], inner_loop=inner_loop, rating_mva=regf3["rating_mva"])
+    worst = max(max(TerminalModel(spec).linearize(point)["init_residual"],
+                    TerminalModel(spec).linearize(point)["init_output_mismatch"]) for point in OPERATING_POINTS)
+    check(worst < 1e-9, f"REGF3 ({inner_loop} inner loop) is at rest at every operating point ({worst:.1e})")
+model = TerminalModel(truth_spec_for("REGF3", regf3["params"], regf3["rating_mva"]))
+check(len(model.state_names) == 14 and "vref2" in model.state_names, "REGF3 has REGF1's 13 states plus vref2")
+check(abs(model.params["Kdvoc"]) < 1e-8, f"ANDES's dVOC gain is negligible (Kdvoc = {model.params['Kdvoc']:.2e})")
+# REGF3's P-f droop is REGF1's divided by vref2**2 = V0**2 in steady state; it has no Q-V droop (Q is held)
+for point in OPERATING_POINTS:
+    _, regf1_same = gains_at(TRUTH_SPEC_BUILDERS["REGF1"](regf3["params"]), point)
+    _, dvoc = gains_at(TRUTH_SPEC_BUILDERS["REGF3"](regf3["params"]), point)
+    check(abs(dvoc["freq"] / regf1_same["freq"] - point[0] ** 2) < 1e-6,
+          f"at V0 = {point[0]}, REGF3's dP/d(omega) is REGF1's times V0**2")
+    check(dvoc["volt"] is None, f"at V0 = {point[0]}, REGF3 has no steady-state Q-V gain (it returns Q to Q0)")
+strong = TRUTH_SPEC_BUILDERS["REGF3"](regf3["params"], parameter_scale={"Kdvoc": 1e6})
+check(TerminalModel(strong).params["Kdvoc"] == model.params["Kdvoc"] * 1e6, "parameter_scale reaches Kdvoc")
+
+# 5. on REGF3's grids the droop component leaves the Q-V droop out (scorer/truth DROOPS_ABSENT)
+from scorer.score_components import droop_error  # noqa: E402
+from scorer.truth import DROOPS_ABSENT  # noqa: E402
+check(DROOPS_ABSENT.get("REGF3") == ("volt",) and "REGF1" not in DROOPS_ABSENT and "REGF2" not in DROOPS_ABSENT,
+      "only REGF3 lacks a droop, and only the Q-V one")
+_, truth_gains = gains_at(TRUTH_SPEC_BUILDERS["REGF3"](regf3["params"]), OPERATING_POINTS[0])
+_, droop_model = gains_at(TRUTH_SPEC_BUILDERS["REGF1"](regf3["params"]), OPERATING_POINTS[0])
+both = droop_error(droop_model, truth_gains, absent=("volt",))
+check(both["volt"] is None and both["mean"] == both["freq"], "a model with a Q-V droop is scored on its P-f droop alone")
+exact = droop_error(truth_gains, truth_gains, absent=("volt",))
+check(exact["mean"] == 0.0, "the truth itself scores 0 on the droop component")
+same_as_before = droop_error(droop_model, droop_model)
+check(same_as_before["mean"] == 0.0 and same_as_before["volt"] == 0.0, "with nothing absent the component is unchanged")
+
 print(f"\nall {passed} checks passed")

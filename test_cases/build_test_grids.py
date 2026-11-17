@@ -2,6 +2,7 @@
 
     python test_cases/build_test_grids.py                        # grids A, B and M (REGF1)
     python test_cases/build_test_grids.py --grids A2,B2,M2       # the REGF2 grids
+    python test_cases/build_test_grids.py --grids A3,B3,M3       # the REGF3 grids (the held-out device)
     python test_cases/build_test_grids.py --grids B --workers 4
     python test_cases/build_test_grids.py --grids B --out /tmp/rebuilt    # somewhere else, to compare
 
@@ -13,7 +14,7 @@ Each grid_specs/grid_<X>.json holds
                             A new device needs its recording variables in DEVICE_RECORDING_VARIABLES below, its
                             voltage-setpoint variable in scorer/grids/kundur_family_builder.py and its truth model in
                             scorer/truth/; then it is a change to this field. REGF1 (grids A, B, M) and REGF2
-                            (grids A2, B2, M2) are set up.
+                            (grids A2, B2, M2) and REGF3 (grids A3, B3, M3) are set up.
   operating_conditions_log  (a grid with training runs) what the operator's log says about each operating point
   design_notes              why the grid is the way it is
 
@@ -52,6 +53,9 @@ DEVICE_RECORDING_VARIABLES = {
 }
 # REGF2 is REGF1 with a VSM frequency law: the same P, Q and limiters (its dw limiter acts on w0*(INTw - 1))
 DEVICE_RECORDING_VARIABLES["REGF2"] = DEVICE_RECORDING_VARIABLES["REGF1"]
+# REGF3 is REGF1 with dVOC primary controls: the same P, Q and limiters (its dw limiter acts on
+# w0*wdrp*(PIplim - Psen)/vref2**2); it adds no PLL
+DEVICE_RECORDING_VARIABLES["REGF3"] = DEVICE_RECORDING_VARIABLES["REGF1"]
 # devices whose ANDES model adds a PLL to its bus: exactly one must be there, with the defaults the truth model uses
 DEVICE_PLL = {"REGF2": "PLL2"}
 # Kundur's loads and lines, as the operator's log names them

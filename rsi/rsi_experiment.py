@@ -99,7 +99,7 @@ from common.api_pricing import resolve_effort, resolve_model_id  # noqa: E402
 from common.harness_files import copy_harness, harness_content_fingerprint, harness_fingerprint  # noqa: E402
 from common.hidden_names import remove_hidden_device_names  # noqa: E402
 from common.project_paths import (DEFAULT_EXPERIMENTS_DIR, DEVICE_SCORER_CONFIGS, DEVICE_SOLVER_DATA_DIRS,  # noqa: E402
-                                  RSI_SCORER_CONFIG, SOLVER_RUN_SCRIPT, STARTING_HARNESS_DIR, UNIT_LABELS)
+                                  HELD_OUT_DEVICES, RSI_SCORER_CONFIG, SOLVER_RUN_SCRIPT, STARTING_HARNESS_DIR, UNIT_LABELS)
 from common.run_provenance import git_commit  # noqa: E402
 from rsi.experiment_archive import ArchiveError, archive, restore  # noqa: E402
 from rsi.harness_proposal import propose_candidate  # noqa: E402
@@ -175,6 +175,10 @@ class ExperimentSettings:
         unknown = [device for device in self.devices if device not in DEVICE_SOLVER_DATA_DIRS]
         if not self.devices or unknown or len(set(self.devices)) != len(self.devices):
             problems.append(f"--devices must name different devices among {sorted(DEVICE_SOLVER_DATA_DIRS)}")
+        held_out = [device for device in self.devices if device in HELD_OUT_DEVICES]
+        if held_out:
+            problems.append(f"{', '.join(held_out)} is a held-out device (common/project_paths.py HELD_OUT_DEVICES): "
+                            "no RSI loop may select on it")
         elif len(self.devices) > 1:
             for name, count in (("--pairs", self.pairs), ("--early-stop-pairs", self.early_stop_pairs),
                                 ("--confirm-pairs", self.confirm_pairs), ("--baseline-runs", self.baseline_runs)):

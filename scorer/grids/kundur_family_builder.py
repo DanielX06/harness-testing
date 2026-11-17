@@ -29,7 +29,8 @@ import pandas as pd
 # the device's idx in the ANDES system (never shown to the agents)
 DEVICE_SLOT_IDX = "GFM_1"
 # the ANDES variable a staged voltage-reference test alters, per device model; a submission's is c_Vset
-VOLTAGE_SETPOINT_VARIABLE = {"REGF1": "vref", "REGF2": "vref"}
+# (REGF3: vref feeds its Vref algebraic, which enters only the dVOC term; see scorer/truth/regf3_as_submission.py)
+VOLTAGE_SETPOINT_VARIABLE = {"REGF1": "vref", "REGF2": "vref", "REGF3": "vref"}
 SUBMISSION_SETPOINT_VARIABLE = "c_Vset"
 
 

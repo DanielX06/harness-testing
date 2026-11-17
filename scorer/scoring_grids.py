@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from scorer.truth import truth_spec_for
+from scorer.truth import DROOPS_ABSENT, truth_spec_for
 
 SIGNAL_COLUMNS = {"P": "active_power_pu", "Q": "reactive_power_pu", "V": "voltage_pu", "theta": "bus_angle_rad"}
 # grid format -> the module whose build_system() rebuilds its runs in ANDES
@@ -43,6 +43,7 @@ class ScoringGrid:
     metadata: dict
     truth_submission: dict          # the true device as a submission
     case_spec_text: str             # case.json, passed to the builder in each worker process
+    droops_absent: tuple = ()       # droop kinds the true device does not have (scorer/truth DROOPS_ABSENT)
 
     @property
     def operating_point(self):
@@ -77,7 +78,7 @@ def load_grid(entry, config_dir):
         noise_sigmas=np.array([answer_key["sigmas"]["P"], answer_key["sigmas"]["Q"]]),
         metadata=dict(answer_key.get("metadata", {})) | dict(entry.get("meta", {})),
         truth_submission=truth_spec_for(answer_key["device"], answer_key["params_used"], answer_key["device_rating_MVA"]),
-        case_spec_text=case_spec_text)
+        case_spec_text=case_spec_text, droops_absent=tuple(DROOPS_ABSENT.get(answer_key["device"], ())))
     first = runs[0]
     for run in runs[1:]:
         if any(abs(first.clean_signals[signal][0] - run.clean_signals[signal][0]) > 1e-6 for signal in SIGNAL_COLUMNS):

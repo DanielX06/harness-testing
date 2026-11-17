@@ -148,8 +148,10 @@ class SubmissionScorer:
         if grid.name not in self._truth_references:
             linearization = submission_parser.TerminalModel(grid.truth_submission).linearize(grid.operating_point)
             response, gains, convergence = _frequency_references(linearization, self.settings)
-            if any(value is None for value in gains.values()):
-                raise RuntimeError(f"{grid.name}: truth droop gains did not converge {convergence}")
+            missing = {kind for kind, value in gains.items() if value is None}
+            if missing != set(grid.droops_absent):
+                raise RuntimeError(f"{grid.name}: truth droop gains {gains} (convergence {convergence}); the device "
+                                   f"should lack exactly {sorted(grid.droops_absent) or 'none'}")
             self._truth_references[grid.name] = (response, gains)
         return self._truth_references[grid.name]
 
@@ -189,13 +191,13 @@ class SubmissionScorer:
                                            if linearization["A"].size else None),
                 "droop_convergence": convergence}
             for kind, gain in gains.items():
-                if gain is None:
+                if gain is None and kind not in grid.droops_absent:
                     failures.append({"task": f"droop_{kind}", "failure": "no_steady_gain",
                                      "detail": "low-frequency gain did not converge (no droop, or a pure integrator)"})
         except Exception as error:
             fr, fr_detail, gains = FAILURE_SCORE, {"failure": "linearize"}, {}
             failures.append({"task": "linearize", "failure": "crash", "detail": f"{type(error).__name__}: {error}"[-400:]})
-        par_detail = score_components.droop_error(gains, true_gains)
+        par_detail = score_components.droop_error(gains, true_gains, absent=grid.droops_absent)
         par = par_detail["mean"]
 
         weights = self.settings["weights"]
@@ -206,7 +208,8 @@ class SubmissionScorer:
                                      **({"failure": errors["failure"]} if "failure" in errors else {})}
                               for name, errors in td_by_run.items()},
                   "fr_entries": {name: round(value, 4) for name, value in fr_detail.items() if name not in ("mean", "failure")},
-                  "par_entries": {name: round(par_detail[name], 4) for name in ("freq", "volt")},
+                  "par_entries": {name: (None if par_detail[name] is None else round(par_detail[name], 4))
+                                  for name in ("freq", "volt")},
                   "failures": [{"task": failure["task"], "failure": failure["failure"], "detail": failure["detail"][-300:]}
                                for failure in failures]}
         private = {**public, "role": grid.role, "td_runs_full": td_by_run, "terminal_errors": terminal_errors,

@@ -86,14 +86,22 @@ def droop_gains(A, B, C, D, lowest_frequency_hz=1e-4):
     return gains, convergence
 
 
-def droop_error(gains, true_gains):
-    """Relative error of each droop gain, capped; a missing gain scores the cap and a zero gain scores 1."""
+def droop_error(gains, true_gains, absent=()):
+    """Relative error of each droop gain, capped; a missing gain scores the cap and a zero gain scores 1.
+    absent: droop kinds the true device does not have (its gain is None); they score None and the mean is
+    over the other kinds."""
     errors = {}
     for kind in ("freq", "volt"):
+        if kind in absent:
+            errors[kind] = None
+            continue
         true_gain, gain = true_gains[kind], gains.get(kind)
         errors[kind] = (COMPONENT_CAP if gain is None or not np.isfinite(gain)
                         else float(min(abs(gain - true_gain) / abs(true_gain), COMPONENT_CAP)))
-    errors["mean"] = float(np.mean([errors["freq"], errors["volt"]]))
+    present = [errors[kind] for kind in ("freq", "volt") if errors[kind] is not None]
+    if not present:
+        raise ValueError("droop_error needs at least one droop the true device has")
+    errors["mean"] = float(np.mean(present))
     return errors
 
 

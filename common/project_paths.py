@@ -42,12 +42,17 @@ SOLVER_DATA_DIRS = {
 DEVICE_SOLVER_DATA_DIRS = {
     "REGF1": SOLVER_DATA_DIRS,
     "REGF2": {"noisy": TEST_CASES_DIR / "grid_A2" / "sandbox_data", "clean": TEST_CASES_DIR / "grid_A2" / "sandbox_data_clean"},
+    # REGF3 is the held-out device (the poster's test, run once): never in an RSI loop
+    "REGF3": {"noisy": TEST_CASES_DIR / "grid_A3" / "sandbox_data", "clean": TEST_CASES_DIR / "grid_A3" / "sandbox_data_clean"},
 }
 # the scorer configs for each device's held-out grids: "min" (selection grid and the same-grid diagnostic), "rsi" (plus
 # the hidden monitor); solver_run.py checks that a config's grids hold the device the run is for
 DEVICE_SCORER_CONFIGS = {
     "REGF1": {"min": MIN_SCORER_CONFIG, "rsi": RSI_SCORER_CONFIG},
     "REGF2": {"min": SCORER_DIR / "config_min_regf2.json", "rsi": SCORER_DIR / "config_rsi_regf2.json"},
+    "REGF3": {"min": SCORER_DIR / "config_min_regf3.json", "rsi": SCORER_DIR / "config_rsi_regf3.json"},
 }
+# devices kept out of every RSI loop: REGF3 is the held-out test, so no loop may select on it
+HELD_OUT_DEVICES = ("REGF3",)
 # what the updater calls each device: the device names themselves are hidden (common/hidden_names.py)
-UNIT_LABELS = {"REGF1": "unit 1", "REGF2": "unit 2"}
+UNIT_LABELS = {"REGF1": "unit 1", "REGF2": "unit 2", "REGF3": "unit 3"}

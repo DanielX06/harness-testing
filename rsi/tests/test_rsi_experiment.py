@@ -557,9 +557,10 @@ check(record["diff_summary"] == "method.md +2 -0" and "nothing changed" in recor
 regf2_ready = all(os.path.exists(os.path.join(str(path), "runs.json")) for path in R.DEVICE_SOLVER_DATA_DIRS["REGF2"].values()) \
     and os.path.exists(os.path.join(REPOSITORY_ROOT, "test_cases", "grid_M2", "holdout", "case.json"))
 check(R.ExperimentSettings(iters=1, out="x", devices=["REGF1", "REGF2"], pairs=5).problems()
-      and R.ExperimentSettings(iters=1, out="x", devices=["REGF1", "REGF3"]).problems()
+      and R.ExperimentSettings(iters=1, out="x", devices=["REGF1", "REGF9"]).problems()
+      and R.ExperimentSettings(iters=2, out="x", devices=["REGF1", "REGF3"]).problems()
       and not R.ExperimentSettings(iters=1, out="x", devices=["REGF1", "REGF2"]).problems(),
-      "two devices need every block count to be a multiple of two, and known devices")
+      "two devices need every block count to be a multiple of two, and known devices, and none held out")
 if regf2_ready:
     two_launcher = FakeLauncher()
     two_client = FakeClient(GOOD)

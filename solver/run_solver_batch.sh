@@ -12,7 +12,8 @@
 #   CONFIG   scorer config, default the device's config_min (scorer/config_min.json, or config_min_regf2.json for
 #            REGF2); scorer/config_rsi.json (config_rsi_regf2.json) also scores every run on the hidden monitor grid
 #            M (M2); use it for anything the RSI loop is compared with
-#   DEVICE   REGF1 (default: grid A's recordings) or REGF2 (grid A2's); a REGF2 batch adds _regf2 to its folder name
+#   DEVICE   REGF1 (default: grid A's recordings), REGF2 (grid A2's) or REGF3 (grid A3's, the held-out device);
+#            a REGF2 or REGF3 batch adds _regf2 or _regf3 to its folder name
 #   bash solver/run_solver_batch.sh haiku low 10 2 clean
 #   CONFIG=scorer/config_rsi.json bash solver/run_solver_batch.sh haiku low 40 4 clean
 #   HARNESS=rsi_loops/<loop>/candidates/h003/harness CONFIG=scorer/config_rsi.json bash solver/run_solver_batch.sh haiku low 20 4 clean
@@ -39,7 +40,8 @@ DEVICE=${DEVICE:-REGF1}
 case "$DEVICE" in
     REGF1) DEFAULT_CONFIG="$REPOSITORY/scorer/config_min.json"; DEVICE_SUFFIX="" ;;
     REGF2) DEFAULT_CONFIG="$REPOSITORY/scorer/config_min_regf2.json"; DEVICE_SUFFIX="_regf2" ;;
-    *) echo "DEVICE must be REGF1 or REGF2, got '$DEVICE'" >&2; exit 1 ;;
+    REGF3) DEFAULT_CONFIG="$REPOSITORY/scorer/config_min_regf3.json"; DEVICE_SUFFIX="_regf3" ;;
+    *) echo "DEVICE must be REGF1, REGF2 or REGF3, got '$DEVICE'" >&2; exit 1 ;;
 esac
 if [ -n "${CONFIG:-}" ]; then
     [ -f "$CONFIG" ] || { echo "CONFIG file not found: $CONFIG" >&2; exit 1; }

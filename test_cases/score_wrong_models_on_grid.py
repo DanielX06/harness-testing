@@ -29,6 +29,11 @@ WRONG_VERSIONS = {
               ("wdrp_x0.8", "full", {"wdrp": 0.8}), ("Qdrp_x0.8", "full", {"Qdrp": 0.8}),
               ("KPv_x0.7", "full", {"KPv": 0.7}), ("mf_x0.5", "full", {"mf": 0.5}), ("mf_x2", "full", {"mf": 2.0}),
               ("REGF1_law", "full", {"mf": 0.001, "dd": 0.0})],
+    # REGF3 (dVOC): no Qdrp version, since Qdrp enters only through the dVOC gain Kdvoc (about 1e-10) and a
+    # 0.8 factor changes nothing; "Kdvoc_x1e6" makes the setpoint term large enough to give the unit a Q-V law
+    "REGF3": [("truth", "full", None), ("flat", None, None), ("ideal_loop", "ideal", None),
+              ("wdrp_x0.8", "full", {"wdrp": 0.8}), ("Tpm_x2", "full", {"Tpm": 2.0}), ("KPv_x0.7", "full", {"KPv": 0.7}),
+              ("Kdvoc_x1e6", "full", {"Kdvoc": 1e6})],
 }
 KEPT_FIELDS = ("score", "td", "fr", "par", "td_runs", "failures")
 

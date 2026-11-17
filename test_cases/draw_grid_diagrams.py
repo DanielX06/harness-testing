@@ -122,7 +122,12 @@ GRID_M = dict(
 GRID_A2 = dict(GRID_A, out=TEST_CASES_DIR / "grid_A2" / "sandbox_data" / "system_diagram.png")
 GRID_B2 = dict(GRID_B, out=TEST_CASES_DIR / "grid_B2" / "holdout" / "system_diagram.png")
 GRID_M2 = dict(GRID_M, out=TEST_CASES_DIR / "grid_M2" / "holdout" / "system_diagram.png")
-GRIDS = {"A": GRID_A, "B": GRID_B, "M": GRID_M, "A2": GRID_A2, "B2": GRID_B2, "M2": GRID_M2}
+# and A3, B3 and M3 the same with the REGF3 unit (the held-out device)
+GRID_A3 = dict(GRID_A, out=TEST_CASES_DIR / "grid_A3" / "sandbox_data" / "system_diagram.png")
+GRID_B3 = dict(GRID_B, out=TEST_CASES_DIR / "grid_B3" / "holdout" / "system_diagram.png")
+GRID_M3 = dict(GRID_M, out=TEST_CASES_DIR / "grid_M3" / "holdout" / "system_diagram.png")
+GRIDS = {"A": GRID_A, "B": GRID_B, "M": GRID_M, "A2": GRID_A2, "B2": GRID_B2, "M2": GRID_M2,
+         "A3": GRID_A3, "B3": GRID_B3, "M3": GRID_M3}
 
 if __name__ == "__main__":
     for key in sys.argv[1:] or ("A", "B", "M"):
