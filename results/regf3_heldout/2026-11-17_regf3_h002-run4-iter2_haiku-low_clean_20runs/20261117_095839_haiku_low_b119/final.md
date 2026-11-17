@@ -1,0 +1,73 @@
+I saved a submission, but it is a weak model. Its parameters are physically implausible, so I would not trust it on the held-out grid. Its validation error is 0.34, against 0.65 for the first fitted candidate, and its linearization is stable.
+
+**What the data showed**
+- P and Q barely respond to the voltage-setpoint steps. Vset moves V and Q only briefly, and V stays near 1.00 pu over 15 s after a +2% step.
+- P is nearly insensitive to theta and V in ambient operation. Q follows V strongly in the disturbance recordings.
+- The fault recording shows the expected large transient, so the current limit or a large-signal effect is active there.
+
+**The model (`submission.json`)**
+This is the WECC droop structure, with a voltage source E behind a coupling impedance XL and Re.
+- Frequency droop: `delta' = w0*mp*(P0 - Pm)`, with a measurement filter on P (`Pm`).
+- Voltage loop: `xv' = kiv*(Vcmd - Vm)`, with `Vcmd = Vset + mq*(Q0 - Qm)`, `E = xv + kpv*(Vcmd - Vm) + kff*(Vset - V0)`.
+- Output: standard P and Q expressions from E, delta and theta.
+- Filters on Qm and Vm.
+- Inits are set from the operating point, and the checker confirms the model is at rest at t=0.
+
+**Parameter identification**
+- **Poorly identified:** XL ≈ 2000, mq ≈ 1.9e22 and TQf ≈ 7e20 are non-physical. The fit used huge XL and mq to make Q nearly insensitive to E and V. kpv ≈ 1241 and kff ≈ -1236 nearly cancel, so Vset has almost no net steady-state effect. This is consistent with the data, but the large numbers make the model ill-conditioned. Its linearized droops (dQ/dV ≈ 0) probably do not match the real device, and its behaviour in large nonlinear events (faults, Q limits) is unverified.
+- **Moderately identified:** mp ≈ 0.056, which is the active-power droop and is reasonable. TPf is at its 0.001 s floor.
+- **Not well identified:** kiv, kpv and kff. Their individual values depend on the cancellation above.
+- **Q error:** Q is still poorly captured on training recordings. The scorer will likely see large Q errors even though the linear replay looks acceptable.
+
+I did not try the VSM structure or the Q-limiter and current-limit blocks, and I ran only a few starting points. A more useful next step would be a structure with a bounded XL and mq, which would be more physical and easier to check against the scorer.
+
+```json
+{
+  "params": {
+    "XL": 1996.8193067275333,
+    "Re": 1.0234970284707543e-156,
+    "mp": 0.056440376756500314,
+    "mq": 1.855244244680457e+22,
+    "kpv": 1241.44583584517,
+    "kiv": 551.85434380793,
+    "kff": -1236.4019996928325,
+    "TPf": 0.001,
+    "TQf": 7.468466269899611e+20,
+    "TVf": 0.046333874858563544,
+    "w0": 376.99111843077515
+  },
+  "defs": {
+    "Vcmd": "Vset + mq*(Q0 - Qm)",
+    "Ei": "xv + kpv*(Vcmd - Vm) + kff*(Vset - V0)",
+    "dl": "delta - theta",
+    "Pe": "V*(Re*(Ei*cos(dl) - V) + XL*Ei*sin(dl))/(Re**2 + XL**2)",
+    "Qe": "V*(XL*(Ei*cos(dl) - V) - Re*Ei*sin(dl))/(Re**2 + XL**2)"
+  },
+  "states": {
+    "delta": {
+      "rhs": "w0*mp*(P0 - Pm)",
+      "init": "theta0 + atan2((XL*P0 - Re*Q0)/V0, V0 + (Re*P0 + XL*Q0)/V0)"
+    },
+    "xv": {
+      "rhs": "kiv*(Vcmd - Vm)",
+      "init": "sqrt((V0 + (Re*P0 + XL*Q0)/V0)**2 + ((XL*P0 - Re*Q0)/V0)**2)"
+    },
+    "Pm": {
+      "rhs": "(Pe - Pm)/TPf",
+      "init": "P0"
+    },
+    "Qm": {
+      "rhs": "(Qe - Qm)/TQf",
+      "init": "Q0"
+    },
+    "Vm": {
+      "rhs": "(V - Vm)/TVf",
+      "init": "V0"
+    }
+  },
+  "outputs": {
+    "P": "Pe",
+    "Q": "Qe"
+  }
+}
+```

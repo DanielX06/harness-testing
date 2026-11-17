@@ -1,0 +1,40 @@
+I saved a submission, but it is a weak fit: the mean validation error is 0.377 against the scorer's scale of 1, and the reactive-power channel is poor.
+
+**What the data show**
+- **Active power** follows bus-angle rate, with about -0.045 rad/s per pu P. That is a frequency droop of roughly 1/mp with mp ≈ 0.055 pu. The P channel fits well on most recordings (normalized error 0.02–0.11), but the fault recording is still at 0.90.
+- **Reactive power** barely moves with terminal voltage in steady state. It stays near its dispatch value through the setpoint steps, the load steps and the generator trip, and only swings during the fault before recovering in about a second. The model does not capture this (Q errors 0.53–1.17).
+- **Setpoint steps** of ±1–2% change V by only about 0.001 pu and Q by nothing measurable.
+
+**The submitted model** (`submission.json`) is a droop-controlled structure: an internal angle `delta` driven by the active-power droop, a voltage integrator `xv` on the voltage error, a coupling reactance `XL`, and first-order measurement filters `Pm`, `Qm`, `Vm`.
+
+**Parameter identification**
+- `mp` ≈ 0.055 is reasonably well identified from the angle-rate regression.
+- `XL` = 19.2 and `mq` = 485 are not physical. The optimizer pushed them to values that effectively disconnect the reactive-power droop and the coupling, so these are poorly identified and should not be read as device values.
+- `kiv` ≈ 0.93 is poorly identified for the same reason.
+- The three filter time constants collapsed to the floor, so they are set to 0.001 s (not identified).
+- The model is stable on its own and behind 0.3 and 0.6 pu reactance.
+
+**What I did not finish**
+- I started a variant with a free voltage proportional gain and feed-forward, and a variant with a different starting point. Both fits timed out, so neither was compared.
+- The reactive-power behaviour is still the main gap. A structure that holds Q near its reference through an integrator, rather than through the voltage droop, is the next thing to test.
+
+```json
+{
+  "params": {"XL": 19.190053578416936, "Re": 0.0, "mp": 0.05497034560719396, "mq": 485.26590493386067, "kpv": 0.0, "kiv": 0.926755839444069, "kff": 0.0, "TPf": 0.001, "TQf": 0.001, "TVf": 0.001, "w0": 376.99111843077515},
+  "defs": {
+    "Vcmd": "Vset + mq*(Q0 - Qm)",
+    "Ei": "xv + kpv*(Vcmd - Vm) + kff*(Vset - V0)",
+    "dl": "delta - theta",
+    "Pe": "V*(Re*(Ei*cos(dl) - V) + XL*Ei*sin(dl))/(Re**2 + XL**2)",
+    "Qe": "V*(XL*(Ei*cos(dl) - V) - Re*Ei*sin(dl))/(Re**2 + XL**2)"
+  },
+  "states": {
+    "delta": {"rhs": "w0*mp*(P0 - Pm)", "init": "theta0 + atan2((XL*P0 - Re*Q0)/V0, V0 + (Re*P0 + XL*Q0)/V0)"},
+    "xv": {"rhs": "kiv*(Vcmd - Vm)", "init": "sqrt((V0 + (Re*P0 + XL*Q0)/V0)**2 + ((XL*P0 - Re*Q0)/V0)**2)"},
+    "Pm": {"rhs": "(Pe - Pm)/TPf", "init": "P0"},
+    "Qm": {"rhs": "(Qe - Qm)/TQf", "init": "Q0"},
+    "Vm": {"rhs": "(V - Vm)/TVf", "init": "V0"}
+  },
+  "outputs": {"P": "Pe", "Q": "Qe"}
+}
+```
