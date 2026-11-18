@@ -65,7 +65,7 @@ def main():
     options = parser.parse_args()
 
     import andes
-    andes.config_logger(stream_level=40)
+    andes.config_logger(stream_level=40, file=False)
     with open(options.config) as file:
         config = json.load(file)
     config_dir = os.path.dirname(os.path.abspath(options.config))

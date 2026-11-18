@@ -30,7 +30,7 @@ def main():
     import andes
     import numpy as np
     from scorer.score_submission import SubmissionScorer
-    andes.config_logger(stream_level=40)
+    andes.config_logger(stream_level=40, file=False)
 
     base = json.load(open(os.path.join(SCORER, "config_min.json")))
     cfg = {k: v for k, v in base.items() if k not in ("_note", "grids")}

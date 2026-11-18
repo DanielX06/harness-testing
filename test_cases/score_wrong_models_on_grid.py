@@ -48,7 +48,7 @@ def main():
     import andes
     from scorer.score_submission import SubmissionScorer
     from scorer.truth import TRUTH_SPEC_BUILDERS
-    andes.config_logger(stream_level=40)
+    andes.config_logger(stream_level=40, file=False)
 
     name = f"grid_{options.grid}"
     grid_dir = os.path.join(TEST_CASES_DIR, name)

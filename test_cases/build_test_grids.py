@@ -75,7 +75,9 @@ def simulate_run(job):
     grid_spec, run_name = job
     import andes
     from scorer.grids.kundur_family_builder import VOLTAGE_SETPOINT_VARIABLE, build_system, voltage_setpoint_series
-    andes.config_logger(stream_level=50)
+    # no log file: ANDES's default writes every step at DEBUG level to a new /tmp/andes-*/andes.log per call,
+    # which filled the desktop's disk during the first grid pool build (Nov 17)
+    andes.config_logger(stream_level=50, file=False)
     case, device = grid_spec["case"], grid_spec["device_under_test"]
     model_name = device["model"]
     if model_name not in DEVICE_RECORDING_VARIABLES:
